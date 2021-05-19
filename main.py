@@ -27,9 +27,12 @@ import imutils
 import numpy as np
 import tensorflow as tf
 from keras import backend as K
-from keras.layers import Concatenate, Lambda, Reshape
+# noinspection PyUnresolvedReferences
+from keras.layers import Concatenate, Lambda, Reshape, _Merge, Add, LeakyReLU
 from keras.layers import Conv2D, Input, ReLU, UpSampling2D, ZeroPadding2D
 from keras.models import Model
+from keras.optimizers import Adam
+from keras import backend as K
 # os.environ['TF_XLA_FLAGS'] = '--tf_xla_enable_xla_devices'
 # from keras_contrib.layers.normalization import InputSpec
 # from keras.utils import plot_model
@@ -40,7 +43,8 @@ from matplotlib import pyplot
 # for Tensorflow 2.2 and Python 3.6+
 from tensorflow._api.v2.compat.v1 import ConfigProto
 from tensorflow._api.v2.compat.v1 import InteractiveSession
-
+from matplotlib import pyplot
+from keras.utils.vis_utils import plot_model
 
 # ----------------------------------------
 # =============== FUNCTIONS===============
@@ -58,6 +62,7 @@ def parse_args():
     parser.add_argument( '--est_diffuse', type = bool, default = True,
                          help = '(TRUE) Estimate diffuse image from images or (FALSE) load from hdf5 file' )
     parser.add_argument( '--image_resize', type = int, default = 128, help = 'image resize resolution' )
+    parser.add_argument( '--c_dim', type = int, default = 5, help = 'dimension of polarimetric domain images )' )
 
     return parser.parse_args()
 
@@ -206,45 +211,33 @@ def white_balance( input_image ):
 
 
 # ----------------------------------------
-def define_descriminator( d_conv_dim):
+def define_descriminator( options ):
     init = tf.keras.RandomNormal( stddev = 0.02 )  # weight initialization
-    # in_image = Input(shape=image_shape)
+    # Discriminator network with PatchGAN
 
-    # C64
-    # d = Conv2D(64, (4, 4), strides=(2, 2), padding='same', kernel_initializer=init)(in_image)
-    # d = LeakyReLU(alpha=0.2)(d)
+    image_size = options.image_resize
+    inp_img = Input(shape = (image_size, image_size, 3))
+    x = ZeroPadding2D(padding = 1)(inp_img)
+    x = Conv2D(filters = 64, kernel_size = 4, strides = 2, padding = 'valid', use_bias = False)(x)
+    x = LeakyReLU(0.01)(x)
 
-    # C128
-    # d = Conv2D(128, (4, 4), strides=(2, 2), padding='same', kernel_initializer=init)(d)
-    # d = InstanceNormalization(axis=-1)(d)
-    # d = LeakyReLU(alpha=0.2)(d)
+    # 6 conv layers
+    N = 64
+    for i in range(1, 6):
+        x = ZeroPadding2D(padding = 1)(x)
+        x = Conv2D( filters = N * 2, kernel_size = 4, strides = 2, padding = 'valid' )( x )
+        x = LeakyReLU(0.01)(x)
+        N = N * 2
 
-    # C256
-    # d = Conv2D(256, (4, 4), strides=(2, 2), padding='same', kernel_initializer=init)(d)
-    # d = InstanceNormalization(axis=-1)(d)
-    # d = LeakyReLU(alpha=0.2)(d)
+    kernel_size = int(image_size / np.power(2, 6))
 
-    # C512
-    # d = Conv2D(512, (4, 4), strides=(2, 2), padding='same', kernel_initializer=init)(d)
-    # d = InstanceNormalization(axis=-1)(d)
-    # d = LeakyReLU(alpha=0.2)(d)
+    out_src = ZeroPadding2D(padding = 1)(x)
+    out_src = Conv2D(filters = 1, kernel_size = 3, strides = 1, padding = 'valid', use_bias = False)(out_src)
 
-    # Second last output layer
-    # d = Conv2D(512, (4, 4), padding='same', kernel_initializer=init)(d)
-    # d = InstanceNormalization(axis=-1)(d)
-    # d = LeakyReLU(alpha=0.2)(d)
+    out_cls = Conv2D(filters = 5, kernel_size = kernel_size, strides = 1, padding = 'valid', use_bias = False)(x)
+    out_cls = Reshape((5, ))(out_cls)
 
-    # patch output
-    # patch_out = Conv2D(1, (4, 4), padding='same', kernel_initializer=init)(d)
-
-    # define model
-    # model = Model(in_image, patch_out)
-
-    # compile model
-    # model.compile(loss='mse', optimizer=Adam(lr=0.0002, beta_1=0.5), loss_weights=[0.5])
-    # return model
-
-    return
+    return Model(inp_img, [out_src, out_cls])
 
 
 # ----------------------------------------
@@ -254,51 +247,53 @@ def plot_model( generator, to_file, show_shapes, show_layer_names ):
 
 
 # ----------------------------------------
-def define_generator( g_conv_dim ):
+def define_generator( options ):
     # generator from StarGAN
     """Generator network."""
     # Input tensors
-    inp_c = Input( shape = (c_dim) )
+    image_size = options.image_resize
+    inp_c = Input( shape = options.c_dim )
     inp_img = Input( shape = (image_size, image_size, 3) )
 
     # Replicate spatially and concatenate domain information
     c = Lambda( lambda x: K.repeat( x, image_size ** 2 ) )( inp_c )
-    c = Reshape( (image_size, image_size, c_dim) )( c )
-    x = Concatenate()( [inp_img, c] )
+    c = Reshape( (image_size, image_size, options.c_dim) )( c )
+    g = Concatenate()( [inp_img, c] )
 
     # First Conv2D
-    x = Conv2D( x,  filters = g_conv_dim, kernel_size = 7, strides = 1, padding = 'same', use_bias = False )
-    x = InstanceNormalization( axis = -1 )( x )
-    x = ReLU()( x )
+    g = Conv2D( g, filters = 64, kernel_size = 7, strides = 1, padding = 'same', use_bias = False )
+    g = InstanceNormalization( axis = -1 )( g )
+    g = ReLU()( g )
 
     # Down-sampling layers
     # 3 downsampling layers, with 64, 128, 256 filters respectively
     N = 64
     for i in range( 2 ):
-        x = ZeroPadding2D( padding = 1 )( x )
-        x = Conv2D( filters = N, kernel_size = 4, strides = 2, padding = 'valid', use_bias = False )( x )
-        x = InstanceNormalization( axis = -1 )( x )
-        x = ReLU()( x )
+        g = ZeroPadding2D( padding = 1 )( g )
+        g = Conv2D( filters = N, kernel_size = 4, strides = 2, padding = 'valid', use_bias = False )( g )
+        g = InstanceNormalization( axis = -1 )( g )
+        g = ReLU()( g )
         N *= 2    # double the filters for next layer
 
     # Bottleneck layers.
+    # 6 layers of 256, K 3x3, S1, P1, ReLU
     for i in range( 6 ):
-        x = ResidualBlock( x, 256 )
+        g = ResidualBlock( g, 256 )
 
     # Up-sampling layers
+    # 3 upsampling layers, with 256, 128, 64 filters respectively
     for i in range( 2 ):
-        x = UpSampling2D( size = 2 )( x )
-        x = Conv2D( filters = curr_dim // 2, kernel_size = 4, strides = 1, padding = 'same', use_bias = False )( x )
-        x = InstanceNormalization( axis = -1 )( x )
-        x = ReLU()( x )
-        curr_dim = curr_dim // 2
+        g = UpSampling2D( size = 2 )( g )
+        g = Conv2D( filters = N // 2, kernel_size = 4, strides = 1, padding = 'same', use_bias = False )( g )
+        g = InstanceNormalization( axis = -1 )( g )
+        g = ReLU()( g )
+        N //= 2
 
     # Last Conv2D
-    x = ZeroPadding2D( padding = 3 )( x )
-    out = Conv2D( filters = 3, kernel_size = 7, strides = 1, padding = 'valid', activation = 'tanh', use_bias = False )( x )
+    g = ZeroPadding2D( padding = 3 )( g )
+    out = Conv2D( filters = 3, kernel_size = 7, strides = 1, padding = 'valid', activation = 'tanh', use_bias = False )( g )
 
     return Model( inputs = [inp_img, inp_c], outputs = out )
-    return
 
 
 # ----------------------------------------
@@ -359,24 +354,24 @@ def main():
 
     # ----------------------------------------
     # create the generator
-    generator = define_generator()
+    G = define_generator(args)
     # summarize the model
-    generator.summary()
-    # plot the model
+    G.summary()
     # ----------------------------------------
     # create discriminator
-    discriminator = define_descriminator( g_conv_dim=64,  )
+    D = define_descriminator( args  )
     # summarize the model
-    discriminator.summary()
-    # plot the model
-    plot_model( discriminator, to_file = 'discriminator_plot.png', show_shapes = True, show_layer_names = True )
-    plot_model( generator, to_file = 'generator_plot.png', show_shapes = True, show_layer_names = True )
+    D.summary()
+
     # ----------------------------------------
+    # plot the model
+    plot_model( D, to_file = 'discriminator_plot.png', show_shapes = True, show_layer_names = True )
+    plot_model( G, to_file = 'generator_plot.png', show_shapes = True, show_layer_names = True )
+    # ----------------------------------------
+    G.trainable = False
     # create the gan
-    gan_model = define_gan( generator, discriminator )
-    # train model
-    train( generator, discriminator, gan_model )
-    pyplot.savefig( 'Final_result.png' )
+    # ----------------------------------------
+    
 
 
 # ----------------------------------
