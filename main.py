@@ -26,7 +26,6 @@ import h5py
 import imutils
 import numpy as np
 import tensorflow as tf
-from keras import backend as K
 # noinspection PyUnresolvedReferences
 from keras.layers import Concatenate, Lambda, Reshape, _Merge, Add, LeakyReLU
 from keras.layers import Conv2D, Input, ReLU, UpSampling2D, ZeroPadding2D
@@ -36,15 +35,16 @@ from keras import backend as K
 # os.environ['TF_XLA_FLAGS'] = '--tf_xla_enable_xla_devices'
 # from keras_contrib.layers.normalization import InputSpec
 # from keras.utils import plot_model
-from keras.utils.vis_utils import plot_model
 from keras_contrib.layers.normalization.instancenormalization import InstanceNormalization
-from matplotlib import pyplot
 # Removes error when running Tensorflow on GPU
 # for Tensorflow 2.2 and Python 3.6+
 from tensorflow._api.v2.compat.v1 import ConfigProto
 from tensorflow._api.v2.compat.v1 import InteractiveSession
 from matplotlib import pyplot
 from keras.utils.vis_utils import plot_model
+from functools import partial
+import random
+
 
 # ----------------------------------------
 # =============== FUNCTIONS===============
@@ -62,7 +62,15 @@ def parse_args():
     parser.add_argument( '--est_diffuse', type = bool, default = True,
                          help = '(TRUE) Estimate diffuse image from images or (FALSE) load from hdf5 file' )
     parser.add_argument( '--image_resize', type = int, default = 128, help = 'image resize resolution' )
-    parser.add_argument( '--c_dim', type = int, default = 5, help = 'dimension of polarimetric domain images )' )
+    parser.add_argument( '--5', type = int, default = 5, help = 'dimension of polarimetric domain images )' )
+    parser.add_argument( '--batch_size', type = int, default = 4, help = 'mini-batch size' )
+    parser.add_argument( '--g_lr', type = float, default = 0.0001, help = 'learning rate for G' )
+    parser.add_argument( '--d_lr', type = float, default = 0.0001, help = 'learning rate for D' )
+    parser.add_argument( '--beta1', type = float, default = 0.5, help = 'beta1 for Adam optimizer' )
+    parser.add_argument( '--beta2', type = float, default = 0.999, help = 'beta2 for Adam optimizer' )
+    parser.add_argument( '--data_dir', type = str, default = 'data/celeba' )
+    parser.add_argument( '--selected_attrs', '--list', nargs = '+', help = 'selected attributes for the CelebA dataset',
+                         default = ['0deg', '45deg', '90deg', '135deg', 'est_diffuse'] )
 
     return parser.parse_args()
 
@@ -84,7 +92,7 @@ def load_dataset( args ):
 
     polarization_labels = ['0', '45', '90', '135']
     image_resize = args.image_size
-    OriginalImageStack, height, width, channels = read_images( sourceFolder, pattern = "*_Itot.png" )
+    OriginalImageStack, height, width, channels = read_images( sourceFolder, image_resize, pattern = "*_Itot.png" )
     imgStack_0deg, height, width, channels = read_images( sourceFolder, image_resize, pattern = "*_0.png" )
     imgStack_45deg, height, width, channels = read_images( sourceFolder, image_resize, pattern = "*_45.png" )
     imgStack_90deg, height, width, channels = read_images( sourceFolder, image_resize, pattern = "*_90.png" )
@@ -156,7 +164,7 @@ def load_dataset( args ):
     # r.clear()
     # merged.fill(0)  # clear the vars before calculating
     else:  # If argument is 'false' then load from hdf5 file
-        save_dataset_hdf5()
+        save_dataset_hdf5( OriginalImageStack )
 
     # Returns all the 4xpolarized images and their estimated diffuse images (Total 5 images)
     return OriginalImageStack, imgStack_0deg, imgStack_45deg, imgStack_90deg, imgStack_135deg, estimated_diffuse_stack
@@ -216,34 +224,28 @@ def define_descriminator( options ):
     # Discriminator network with PatchGAN
 
     image_size = options.image_resize
-    inp_img = Input(shape = (image_size, image_size, 3))
-    x = ZeroPadding2D(padding = 1)(inp_img)
-    x = Conv2D(filters = 64, kernel_size = 4, strides = 2, padding = 'valid', use_bias = False)(x)
-    x = LeakyReLU(0.01)(x)
+    inp_img = Input( shape = (image_size, image_size, 3) )
+    x = ZeroPadding2D( padding = 1 )( inp_img )
+    x = Conv2D( filters = 64, kernel_size = 4, strides = 2, padding = 'valid', use_bias = False )( x )
+    x = LeakyReLU( 0.01 )( x )
 
     # 6 conv layers
     N = 64
-    for i in range(1, 6):
-        x = ZeroPadding2D(padding = 1)(x)
+    for i in range( 1, 6 ):
+        x = ZeroPadding2D( padding = 1 )( x )
         x = Conv2D( filters = N * 2, kernel_size = 4, strides = 2, padding = 'valid' )( x )
-        x = LeakyReLU(0.01)(x)
+        x = LeakyReLU( 0.01 )( x )
         N = N * 2
 
-    kernel_size = int(image_size / np.power(2, 6))
+    kernel_size = int( image_size / np.power( 2, 6 ) )
 
-    out_src = ZeroPadding2D(padding = 1)(x)
-    out_src = Conv2D(filters = 1, kernel_size = 3, strides = 1, padding = 'valid', use_bias = False)(out_src)
+    out_src = ZeroPadding2D( padding = 1 )( x )
+    out_src = Conv2D( filters = 1, kernel_size = 3, strides = 1, padding = 'valid', use_bias = False )( out_src )
 
-    out_cls = Conv2D(filters = 5, kernel_size = kernel_size, strides = 1, padding = 'valid', use_bias = False)(x)
-    out_cls = Reshape((5, ))(out_cls)
+    out_cls = Conv2D( filters = 5, kernel_size = kernel_size, strides = 1, padding = 'valid', use_bias = False )( x )
+    out_cls = Reshape( (5,) )( out_cls )
 
-    return Model(inp_img, [out_src, out_cls])
-
-
-# ----------------------------------------
-def plot_model( generator, to_file, show_shapes, show_layer_names ):
-    # plot model
-    return
+    return Model( inp_img, [out_src, out_cls] )
 
 
 # ----------------------------------------
@@ -252,12 +254,12 @@ def define_generator( options ):
     """Generator network."""
     # Input tensors
     image_size = options.image_resize
-    inp_c = Input( shape = options.c_dim )
+    inp_c = Input( shape = 5 )
     inp_img = Input( shape = (image_size, image_size, 3) )
 
     # Replicate spatially and concatenate domain information
     c = Lambda( lambda x: K.repeat( x, image_size ** 2 ) )( inp_c )
-    c = Reshape( (image_size, image_size, options.c_dim) )( c )
+    c = Reshape( (image_size, image_size, 5) )( c )
     g = Concatenate()( [inp_img, c] )
 
     # First Conv2D
@@ -273,7 +275,7 @@ def define_generator( options ):
         g = Conv2D( filters = N, kernel_size = 4, strides = 2, padding = 'valid', use_bias = False )( g )
         g = InstanceNormalization( axis = -1 )( g )
         g = ReLU()( g )
-        N *= 2    # double the filters for next layer
+        N *= 2  # double the filters for next layer
 
     # Bottleneck layers.
     # 6 layers of 256, K 3x3, S1, P1, ReLU
@@ -297,21 +299,150 @@ def define_generator( options ):
 
 
 # ----------------------------------------
-def ResidualBlock(inp, dim_out):
+def ResidualBlock( inp, dim_out ):
     """Residual Block with instance normalization."""
-    x = ZeroPadding2D(padding = 1)(inp)
-    x = Conv2D(filters = dim_out, kernel_size=3, strides=1, padding='valid', use_bias = False)(x)
-    x = InstanceNormalization(axis = -1)(x)
-    x = ReLU()(x)
-    x = ZeroPadding2D(padding = 1)(x)
-    x = Conv2D(filters = dim_out, kernel_size=3, strides=1, padding='valid', use_bias = False)(x)
-    x = InstanceNormalization(axis = -1)(x)
-    return Add()([inp, x])
+    x = ZeroPadding2D( padding = 1 )( inp )
+    x = Conv2D( filters = dim_out, kernel_size = 3, strides = 1, padding = 'valid', use_bias = False )( x )
+    x = InstanceNormalization( axis = -1 )( x )
+    x = ReLU()( x )
+    x = ZeroPadding2D( padding = 1 )( x )
+    x = Conv2D( filters = dim_out, kernel_size = 3, strides = 1, padding = 'valid', use_bias = False )( x )
+    x = InstanceNormalization( axis = -1 )( x )
+    return Add()( [inp, x] )
+
+
 # ----------------------------------------
 def define_gan( generator_model, discriminator_model ):
     #
     ganModel = 0
     return ganModel
+
+
+# ----------------------------------------
+def gradient_penalty_loss( self, y_true, y_pred, averaged_samples ):
+    """
+    Computes gradient penalty based on prediction and weighted real / fake samples
+    """
+    gradients = K.gradients( y_pred, averaged_samples )[0]
+    # compute the euclidean norm by squaring ...
+    gradients_sqr = K.square( gradients )
+    #   ... summing over the rows ...
+    gradients_sqr_sum = K.sum( gradients_sqr, axis = np.arange( 1, len( gradients_sqr.shape ) ) )
+    #   ... and sqrt
+    gradient_l2_norm = K.sqrt( gradients_sqr_sum )
+    # compute lambda * (1 - ||grad||)^2 still for each single sample
+    gradient_penalty = K.square( 1 - gradient_l2_norm )
+    # return the mean as loss over all the batch samples
+    return K.mean( gradient_penalty )
+
+
+# ----------------------------------------
+def RandomWeightedAverage():
+    """Provides a (random) weighted average between real and generated image samples"""
+    define_batch_size( self, bs )
+    _merge_function(self, inputs )
+    alpha = K.random_uniform( (bs, 1, 1, 1) )
+    return (alpha * inputs[0]) + ((1 - alpha) * inputs[1])
+
+
+def wasserstein_loss( self, Y_true, Y_pred ):
+    return K.mean( Y_true * Y_pred )
+
+
+def reconstruction_loss( self, Y_true, Y_pred ):
+    return K.mean( K.abs( Y_true - Y_pred ) )
+
+
+def classification_loss( self, Y_true, Y_pred ):
+    # return tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(labels=Y_true, logits=Y_pred)) # orig
+    return tf.reduce_mean( tf.math.squared_difference( Y_pred, Y_true ) )
+    # return tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(labels=Y_true, logits=Y_pred))
+    # return tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits_v2(labels=Y_true, logits=Y_pred))
+    # return tf.reduce_mean(tf.losses.categorical_crossentropy(Y_true, Y_pred, from_logits=True))
+
+
+def ImageData( self, data_dir, selected_attrs ):
+    self.selected_attrs = selected_attrs
+
+    self.data_path = os.path.join( data_dir, 'images' )
+    self.lines = open( os.path.join( data_dir, 'list_attr_celeba.txt' ), 'r' ).readlines()
+
+    self.train_dataset = []
+    self.train_dataset_label = []
+    self.train_dataset_fix_label = []
+
+    self.test_dataset = []
+    self.test_dataset_label = []
+    self.test_dataset_fix_label = []
+
+    self.attr2idx = { }
+    self.idx2attr = { }
+
+    all_attr_names = self.lines[1].split()
+    for i, attr_name in enumerate( all_attr_names ):
+        self.attr2idx[attr_name] = i
+        self.idx2attr[i] = attr_name
+
+    lines = self.lines[2:]
+    random.seed( 1234 )
+    random.shuffle( lines )
+
+    for i, line in enumerate( lines ):
+        split = line.split()
+        filename = os.path.join( self.data_path, split[0] )
+        values = split[1:]
+
+        label = []
+
+        for attr_name in self.selected_attrs:
+            idx = self.attr2idx[attr_name]
+
+            if values[idx] == '1':
+                label.append( 1 )
+            else:
+                label.append( 0 )
+
+        if i < 2000:
+            self.test_dataset.append( filename )
+            self.test_dataset_label.append( label )
+        else:
+            self.train_dataset.append( filename )
+            self.train_dataset_label.append( label )
+        # ['./dataset/celebA/train/019932.jpg', [1, 0, 0, 0, 1]]
+
+    self.test_dataset_fix_label = create_labels( self.test_dataset_label, self.selected_attrs )
+    self.train_dataset_fix_label = create_labels( self.train_dataset_label, self.selected_attrs )
+
+    print( '\n Finished preprocessing the Diffuse dataset...' )
+
+
+def create_labels( c_org, selected_attrs = None ):
+    """Generate target domain labels for debugging and testing."""
+    # Get hair color indices.
+    c_org = np.asarray( c_org )
+    hair_color_indices = []
+    for i, attr_name in enumerate( selected_attrs ):
+        if attr_name in ['0deg', '45deg', '90deg', '135deg', 'est_diffuse']:
+            hair_color_indices.append( i )
+
+    c_trg_list = []
+
+    for i in range( len( selected_attrs ) ):
+        c_trg = c_org.copy()
+
+        if i in hair_color_indices:  # Set one hair color to 1 and the rest to 0.
+            c_trg[:, i] = 1.0
+            for j in hair_color_indices:
+                if j != i:
+                    c_trg[:, j] = 0.0
+        else:
+            c_trg[:, i] = (c_trg[:, i] == 0)  # Reverse attribute value.
+
+        c_trg_list.append( c_trg )
+
+    c_trg_list = np.transpose( c_trg_list, axes = [1, 0, 2] )  # [c_dim, bs, ch]
+
+    return c_trg_list
 
 
 # ----------------------------------------
@@ -352,14 +483,15 @@ def main():
     OriginalImageStack, img_0deg, img_45deg, img_90deg, img_135deg, estimated_diffuse = load_dataset( args )
     print( "[LOADED IMAGE] - Dataset size: ", len( img_0deg ), "images" )
 
+    image_size = args.image_resize
     # ----------------------------------------
     # create the generator
-    G = define_generator(args)
+    G = define_generator( args )
     # summarize the model
     G.summary()
     # ----------------------------------------
     # create discriminator
-    D = define_descriminator( args  )
+    D = define_descriminator( args )
     # summarize the model
     D.summary()
 
@@ -367,11 +499,67 @@ def main():
     # plot the model
     plot_model( D, to_file = 'discriminator_plot.png', show_shapes = True, show_layer_names = True )
     plot_model( G, to_file = 'generator_plot.png', show_shapes = True, show_layer_names = True )
+
+    # THE MODEL SHOULD BE CORRECT BASED ON THE ABOVE GENERATED MODEL FILES
+    # THIS WILL BE A GOOD REVIEW BEFORE GOING AHEAD WITH THE TRAINING
     # ----------------------------------------
     G.trainable = False
     # create the gan
     # ----------------------------------------
-    
+    # Compute output with real images.
+    x_real = Input( shape = (image_size, image_size, 3) )
+    out_src_real, out_cls_real = D( x_real )
+
+    # Compute output with fake images.
+    label_trg = Input( shape = (5,) )
+    x_fake = G( [x_real, label_trg] )
+    out_src_fake, out_cls_fake = D( x_fake )
+
+    # Compute output for gradient penalty.
+    rd_avg = RandomWeightedAverage()
+    rd_avg.define_batch_size( args.batch_size )
+    x_hat = rd_avg( [x_real, x_fake] )
+    out_src, _ = D( x_hat )
+
+    # Use Python partial to provide loss function with additional 'averaged_samples' argument
+    partial_gp_loss = partial( gradient_penalty_loss, averaged_samples = x_hat )
+    partial_gp_loss.__name__ = 'gradient_penalty'  # Keras requires function names
+
+    # Define training model D
+    train_D = Model( [x_real, label_trg], [out_src_real, out_cls_real, out_src_fake, out_src] )
+
+    # Setup loss for train_D
+    train_D.compile( loss = [wasserstein_loss, classification_loss, wasserstein_loss, partial_gp_loss],
+                     optimizer = Adam( lr = args.d_lr, beta_1 = args.beta1, beta_2 = args.beta2 ),
+                     loss_weights = [1, args.lambda_cls, 1, args.lambda_gp] )
+
+    # Update G and not update D
+    G.trainable = True
+    D.trainable = False
+
+    # All inputs
+    real_x = Input( shape = (image_size, image_size, 3) )
+    org_label = Input( shape = (5,) )
+    trg_label = Input( shape = (5,) )
+
+    # Compute output of fake image
+    fake_x = G( [real_x, trg_label] )
+    fake_out_src, fake_out_cls = D( fake_x )
+
+    # Target-to-original domain.
+    x_reconst = G( [fake_x, org_label] )
+
+    # Define traning model G
+    train_G = Model( [real_x, org_label, trg_label], [fake_out_src, fake_out_cls, x_reconst] )
+
+    # Setup loss for train_G
+    train_G.compile( loss = [wasserstein_loss, classification_loss, reconstruction_loss],
+                     optimizer = Adam( lr = args.g_lr, beta_1 = args.beta1, beta_2 = args.beta2 ),
+                     loss_weights = [1, args.lambda_cls, args.lambda_rec] )
+
+    """ Input Image"""
+    Image_data_class = ImageData( data_dir = args.data_dir, selected_attrs = args.selected_attrs )
+    Image_data_class.preprocess()
 
 
 # ----------------------------------
