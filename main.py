@@ -337,13 +337,15 @@ def gradient_penalty_loss( self, y_true, y_pred, averaged_samples ):
 
 
 # ----------------------------------------
-def RandomWeightedAverage():
+# ----------------------------------------
+# ----------------------------------------
+def RandomWeightedAverage( bs, inputs):
     """Provides a (random) weighted average between real and generated image samples"""
-    define_batch_size( self, bs )
-    _merge_function(self, inputs )
     alpha = K.random_uniform( (bs, 1, 1, 1) )
     return (alpha * inputs[0]) + ((1 - alpha) * inputs[1])
 
+# ----------------------------------------
+# ----------------------------------------
 
 def wasserstein_loss( self, Y_true, Y_pred ):
     return K.mean( Y_true * Y_pred )
@@ -515,10 +517,8 @@ def main():
     x_fake = G( [x_real, label_trg] )
     out_src_fake, out_cls_fake = D( x_fake )
 
-    # Compute output for gradient penalty.
-    rd_avg = RandomWeightedAverage()
-    rd_avg.define_batch_size( args.batch_size )
-    x_hat = rd_avg( [x_real, x_fake] )
+    # Compute output for gradient penalty
+    x_hat = RandomWeightedAverage( args.batch_size, [x_real, x_fake] )
     out_src, _ = D( x_hat )
 
     # Use Python partial to provide loss function with additional 'averaged_samples' argument
