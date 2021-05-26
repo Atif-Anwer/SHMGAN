@@ -21,28 +21,27 @@ Parameters
 import argparse
 import glob
 import os
-import cv2
+# import cv2
+# import numpy as np
+# from matplotlib import pyplot
 import h5py
-import imutils
-import numpy as np
 import tensorflow as tf
 # noinspection PyUnresolvedReferences
 from keras.layers import Concatenate, Lambda, Reshape, _Merge, Add, LeakyReLU
 from keras.layers import Conv2D, Input, ReLU, UpSampling2D, ZeroPadding2D
 from keras.models import Model
 from keras.optimizers import Adam
-from keras import backend as K
+from keras import backend as KERAS_backend
 # os.environ['TF_XLA_FLAGS'] = '--tf_xla_enable_xla_devices'
 # from keras_contrib.layers.normalization import InputSpec
-# from keras.utils import plot_model
 from keras_contrib.layers.normalization.instancenormalization import InstanceNormalization
 # Removes error when running Tensorflow on GPU
 # for Tensorflow 2.2 and Python 3.6+
 from tensorflow._api.v2.compat.v1 import ConfigProto
 from tensorflow._api.v2.compat.v1 import InteractiveSession
-from matplotlib import pyplot
 from keras.utils.vis_utils import plot_model
 from functools import partial
+from utils import *
 import random
 
 
@@ -58,7 +57,7 @@ def parse_args():
     parser = argparse.ArgumentParser( description = desc )
 
     # Model configuration.
-    parser.add_argument( "-p", "--path", default = "./home/atif/Documents/Datasets/PolarizedImages/", help = "Path to polarimetric image" )
+    parser.add_argument( '--num_iteration', type = int, default = 200000, help = 'number of total iterations for training D' )
     parser.add_argument( '--est_diffuse', type = bool, default = True,
                          help = '(TRUE) Estimate diffuse image from images or (FALSE) load from hdf5 file' )
     parser.add_argument( '--image_resize', type = int, default = 128, help = 'image resize resolution' )
@@ -71,7 +70,26 @@ def parse_args():
     parser.add_argument( '--data_dir', type = str, default = 'data/celeba' )
     parser.add_argument( '--selected_attrs', '--list', nargs = '+', help = 'selected attributes for the CelebA dataset',
                          default = ['0deg', '45deg', '90deg', '135deg', 'est_diffuse'] )
+    parser.add_argument( '--num_iteration_decay', type = int, default = 100000, help = 'number of iterations for decaying lr' )
+    parser.add_argument( '--n_critic', type = int, default = 5, help = 'number of D updates per each G update' )
 
+    # Directories.
+    parser.add_argument( "-p", "--path", default = "./home/atif/Documents/Datasets/PolarizedImages/", help = "Path to polarimetric image" )
+    parser.add_argument( '--data_dir', type = str, default = 'data/celeba' )
+    parser.add_argument( '--model_save_dir', type = str, default = 'models' )
+    parser.add_argument( '--sample_dir', type = str, default = 'samples' )
+    parser.add_argument( '--result_dir', type = str, default = 'results' )
+
+    # Step size.
+    parser.add_argument( '--log_step', type = int, default = 10 )
+    parser.add_argument( '--sample_step', type = int, default = 1000 )
+    parser.add_argument( '--model_save_step', type = int, default = 10000 )
+    parser.add_argument( '--lr_update_step', type = int, default = 1000 )
+
+    # Miscellaneous.
+    parser.add_argument( '--mode', type = str, default = 'train', choices = ['train', 'test', 'custom'] )
+
+    print( '\n [ => ] Passing all input arguments...' )
     return parser.parse_args()
 
 
@@ -92,14 +110,14 @@ def load_dataset( args ):
 
     polarization_labels = ['0', '45', '90', '135']
     image_resize = args.image_size
-    OriginalImageStack, height, width, channels = read_images( sourceFolder, image_resize, pattern = "*_Itot.png" )
-    imgStack_0deg, height, width, channels = read_images( sourceFolder, image_resize, pattern = "*_0.png" )
-    imgStack_45deg, height, width, channels = read_images( sourceFolder, image_resize, pattern = "*_45.png" )
-    imgStack_90deg, height, width, channels = read_images( sourceFolder, image_resize, pattern = "*_90.png" )
-    imgStack_135deg, height, width, channels = read_images( sourceFolder, image_resize, pattern = "*_135.png" )
-    imgStack_masks, height, width, channels = read_images( sourceFolder, image_resize, pattern = "*_mask.png" )
+    filenames_Itot, OriginalImageStack, height, width, channels = read_images( sourceFolder, image_resize, pattern = "*_Itot.png" )
+    filenames_0deg, imgStack_0deg, height, width, channels = read_images( sourceFolder, image_resize, pattern = "*_0.png" )
+    filenames_45deg, imgStack_45deg, height, width, channels = read_images( sourceFolder, image_resize, pattern = "*_45.png" )
+    filenames_90deg, imgStack_90deg, height, width, channels = read_images( sourceFolder, image_resize, pattern = "*_90.png" )
+    filenames_135deg, imgStack_135deg, height, width, channels = read_images( sourceFolder, image_resize, pattern = "*_135.png" )
+    filenames_masks, imgStack_masks, height, width, channels = read_images( sourceFolder, image_resize, pattern = "*_mask.png" )
 
-    print( "\nNo of images in folder: {0}".format( len( imgStack_0deg ) ) )
+    print( "\n No of images in folder: {0}".format( len( imgStack_0deg ) ) )
     # ESTIMATED DIFFUSE CALCULATION:
     # Ideally, the diffuse should only be approximated in areas of specular highlight, leaving the other areas untouched
     # However for the time, we can just plug in the whole image and take the minimum
@@ -109,6 +127,7 @@ def load_dataset( args ):
     g = []
     r = []
     estimated_diffuse_stack = []
+    filenames_est_diffuse = []
     i = 0
 
     if args.est_diffuse:  # If argument is 'True' calculate the estimated diffuse images
@@ -143,7 +162,9 @@ def load_dataset( args ):
             i += 1
 
             # WRITE the image to a file if required. Can eb commented out if req
-            # cv2.imwrite('ResultA0' + str(i) + '_min' + '.png', merged)
+            name = 'ResultA0' + str( i ) + '_min' + '.png'
+            # cv2.imwrite(name, merged)
+            filenames_est_diffuse.append( name )
 
             # Stack the estimated diffuse images for later use in loop
             estimated_diffuse_stack.append( merged )
@@ -166,8 +187,9 @@ def load_dataset( args ):
     else:  # If argument is 'false' then load from hdf5 file
         save_dataset_hdf5( OriginalImageStack )
 
+    print( '\n [ => ] Loading dataset, calculating estimated diffuse and returning filenames ...' )
     # Returns all the 4xpolarized images and their estimated diffuse images (Total 5 images)
-    return OriginalImageStack, imgStack_0deg, imgStack_45deg, imgStack_90deg, imgStack_135deg, estimated_diffuse_stack
+    return filenames_Itot, filenames_0deg, filenames_45deg, filenames_90deg, filenames_135deg, filenames_est_diffuse
 
 
 # ----------------------------------------
@@ -177,49 +199,28 @@ def save_dataset_hdf5( image_stack ):
 
     dset = hf.create_dataset( 'default', data = image_stack, compression = "gzip", compression_opts = 9 )
     hf.close()  # close the hdf5 file
-    print( 'hdf5 file size: %d bytes' % os.path.getsize( save_path ) )
+    print( '\n [ => ] Dataset Saved. hdf5 file size: %d bytes' % os.path.getsize( save_path ) )
 
 
 # ----------------------------------------
 # Read all images in the dataset and return a np array
 def read_images( path, new_size, pattern ):
     image_stack = []
+    filenames = []
     # build path string, sort by name
     for img in sorted( glob.glob( path + "/" + pattern ) ):
         img = cv2.imread( img )
         # Resize image to improve performance
         resized_image = resize_images( img, rowsize = new_size, colsize = new_size )
         image_stack.append( resized_image )
+        filenames.append( os.path.split( path ) )
 
     height, width, channels = image_stack[0].shape
-    return image_stack, height, width, channels
+    return filenames, image_stack, height, width, channels
 
 
 # ----------------------------------------
-def resize_images( img, rowsize, colsize ):
-    # The loaded images will be resized to lower res for faster training and eval. After POC, higher res can be used
-    # rows, cols, ch = img.shape
-    # Adding white balance to remove the green tint generating from the polarized images
-    resized_image = white_balance( imutils.resize( img, width = colsize, height = rowsize ) )
-    return resized_image
-
-
-# ------------------------------------------
-# White balance
-#  Source: https://stackoverflow.com/questions/46390779/automatic-white-balancing-with-grayworld-assumption
-# ------------------------------------------
-def white_balance( input_image ):
-    result = cv2.cvtColor( input_image, cv2.COLOR_RGB2LAB )
-    avg_a = np.average( result[:, :, 1] )
-    avg_b = np.average( result[:, :, 2] )
-    result[:, :, 1] = result[:, :, 1] - ((avg_a - 128) * (result[:, :, 0] / 255.0) * 1.1)
-    result[:, :, 2] = result[:, :, 2] - ((avg_b - 128) * (result[:, :, 0] / 255.0) * 1.1)
-    whiteBalancedImage = cv2.cvtColor( result, cv2.COLOR_LAB2RGB )
-    return whiteBalancedImage
-
-
-# ----------------------------------------
-def define_descriminator( options ):
+def define_discriminator( options ):
     init = tf.keras.RandomNormal( stddev = 0.02 )  # weight initialization
     # Discriminator network with PatchGAN
 
@@ -245,6 +246,7 @@ def define_descriminator( options ):
     out_cls = Conv2D( filters = 5, kernel_size = kernel_size, strides = 1, padding = 'valid', use_bias = False )( x )
     out_cls = Reshape( (5,) )( out_cls )
 
+    print( '\n [ => ] Building Discriminator ...' )
     return Model( inp_img, [out_src, out_cls] )
 
 
@@ -258,7 +260,7 @@ def define_generator( options ):
     inp_img = Input( shape = (image_size, image_size, 3) )
 
     # Replicate spatially and concatenate domain information
-    c = Lambda( lambda x: K.repeat( x, image_size ** 2 ) )( inp_c )
+    c = Lambda( lambda x: KERAS_backend.repeat( x, image_size ** 2 ) )( inp_c )
     c = Reshape( (image_size, image_size, 5) )( c )
     g = Concatenate()( [inp_img, c] )
 
@@ -295,6 +297,7 @@ def define_generator( options ):
     g = ZeroPadding2D( padding = 3 )( g )
     out = Conv2D( filters = 3, kernel_size = 7, strides = 1, padding = 'valid', activation = 'tanh', use_bias = False )( g )
 
+    print( '\n [ => ] Building Generator ...' )
     return Model( inputs = [inp_img, inp_c], outputs = out )
 
 
@@ -312,10 +315,10 @@ def ResidualBlock( inp, dim_out ):
 
 
 # ----------------------------------------
-def define_gan( generator_model, discriminator_model ):
-    #
-    ganModel = 0
-    return ganModel
+# def define_gan( generator_model, discriminator_model ):
+#     #
+#     ganModel = 0
+#     return ganModel
 
 
 # ----------------------------------------
@@ -323,36 +326,34 @@ def gradient_penalty_loss( self, y_true, y_pred, averaged_samples ):
     """
     Computes gradient penalty based on prediction and weighted real / fake samples
     """
-    gradients = K.gradients( y_pred, averaged_samples )[0]
+    gradients = KERAS_backend.gradients( y_pred, averaged_samples )[0]
     # compute the euclidean norm by squaring ...
-    gradients_sqr = K.square( gradients )
+    gradients_sqr = KERAS_backend.square( gradients )
     #   ... summing over the rows ...
-    gradients_sqr_sum = K.sum( gradients_sqr, axis = np.arange( 1, len( gradients_sqr.shape ) ) )
+    gradients_sqr_sum = KERAS_backend.sum( gradients_sqr, axis = np.arange( 1, len( gradients_sqr.shape ) ) )
     #   ... and sqrt
-    gradient_l2_norm = K.sqrt( gradients_sqr_sum )
+    gradient_l2_norm = KERAS_backend.sqrt( gradients_sqr_sum )
     # compute lambda * (1 - ||grad||)^2 still for each single sample
-    gradient_penalty = K.square( 1 - gradient_l2_norm )
+    gradient_penalty = KERAS_backend.square( 1 - gradient_l2_norm )
     # return the mean as loss over all the batch samples
-    return K.mean( gradient_penalty )
+    return KERAS_backend.mean( gradient_penalty )
 
 
 # ----------------------------------------
-# ----------------------------------------
-# ----------------------------------------
-def RandomWeightedAverage( bs, inputs):
+def RandomWeightedAverage( bs, inputs ):
     """Provides a (random) weighted average between real and generated image samples"""
-    alpha = K.random_uniform( (bs, 1, 1, 1) )
+    alpha = KERAS_backend.random_uniform( (bs, 1, 1, 1) )
     return (alpha * inputs[0]) + ((1 - alpha) * inputs[1])
 
-# ----------------------------------------
-# ----------------------------------------
 
+# -------LOSSES---------------------------
+# ----------------------------------------
 def wasserstein_loss( self, Y_true, Y_pred ):
-    return K.mean( Y_true * Y_pred )
+    return KERAS_backend.mean( Y_true * Y_pred )
 
 
 def reconstruction_loss( self, Y_true, Y_pred ):
-    return K.mean( K.abs( Y_true - Y_pred ) )
+    return KERAS_backend.mean( KERAS_backend.abs( Y_true - Y_pred ) )
 
 
 def classification_loss( self, Y_true, Y_pred ):
@@ -363,92 +364,74 @@ def classification_loss( self, Y_true, Y_pred ):
     # return tf.reduce_mean(tf.losses.categorical_crossentropy(Y_true, Y_pred, from_logits=True))
 
 
-def ImageData( self, data_dir, selected_attrs ):
-    self.selected_attrs = selected_attrs
+# ----------------------------------------
+def get_loader( filenames, labels, fix_labels, image_size = 128, batch_size = 16, mode = 'train' ):
+    """Build and return a data loader."""
+    n_batches = int( len( filenames ) / batch_size )
+    total_samples = n_batches * batch_size
 
-    self.data_path = os.path.join( data_dir, 'images' )
-    self.lines = open( os.path.join( data_dir, 'list_attr_celeba.txt' ), 'r' ).readlines()
+    for i in range( n_batches ):
+        batch = filenames[i * batch_size:(i + 1) * batch_size]
+        imgs = []
+        for p in batch:
+            image = cv2.imread( p )
+            image = cv2.cvtColor( image, cv2.COLOR_BGR2RGB )
+            image = resize_images( image, colsize = image_size, rowsize = image_size )
+            if mode == 'train':
+                proba = np.random.rand()
+                if proba > 0.5:
+                    image = cv2.flip( image, 1 )
 
-    self.train_dataset = []
-    self.train_dataset_label = []
-    self.train_dataset_fix_label = []
+            imgs.append( image )
 
-    self.test_dataset = []
-    self.test_dataset_label = []
-    self.test_dataset_fix_label = []
-
-    self.attr2idx = { }
-    self.idx2attr = { }
-
-    all_attr_names = self.lines[1].split()
-    for i, attr_name in enumerate( all_attr_names ):
-        self.attr2idx[attr_name] = i
-        self.idx2attr[i] = attr_name
-
-    lines = self.lines[2:]
-    random.seed( 1234 )
-    random.shuffle( lines )
-
-    for i, line in enumerate( lines ):
-        split = line.split()
-        filename = os.path.join( self.data_path, split[0] )
-        values = split[1:]
-
-        label = []
-
-        for attr_name in self.selected_attrs:
-            idx = self.attr2idx[attr_name]
-
-            if values[idx] == '1':
-                label.append( 1 )
-            else:
-                label.append( 0 )
-
-        if i < 2000:
-            self.test_dataset.append( filename )
-            self.test_dataset_label.append( label )
-        else:
-            self.train_dataset.append( filename )
-            self.train_dataset_label.append( label )
-        # ['./dataset/celebA/train/019932.jpg', [1, 0, 0, 0, 1]]
-
-    self.test_dataset_fix_label = create_labels( self.test_dataset_label, self.selected_attrs )
-    self.train_dataset_fix_label = create_labels( self.train_dataset_label, self.selected_attrs )
-
-    print( '\n Finished preprocessing the Diffuse dataset...' )
-
-
-def create_labels( c_org, selected_attrs = None ):
-    """Generate target domain labels for debugging and testing."""
-    # Get hair color indices.
-    c_org = np.asarray( c_org )
-    hair_color_indices = []
-    for i, attr_name in enumerate( selected_attrs ):
-        if attr_name in ['0deg', '45deg', '90deg', '135deg', 'est_diffuse']:
-            hair_color_indices.append( i )
-
-    c_trg_list = []
-
-    for i in range( len( selected_attrs ) ):
-        c_trg = c_org.copy()
-
-        if i in hair_color_indices:  # Set one hair color to 1 and the rest to 0.
-            c_trg[:, i] = 1.0
-            for j in hair_color_indices:
-                if j != i:
-                    c_trg[:, j] = 0.0
-        else:
-            c_trg[:, i] = (c_trg[:, i] == 0)  # Reverse attribute value.
-
-        c_trg_list.append( c_trg )
-
-    c_trg_list = np.transpose( c_trg_list, axes = [1, 0, 2] )  # [c_dim, bs, ch]
-
-    return c_trg_list
+        imgs = np.array( imgs ) / 127.5 - 1
+        orig_labels = np.array( labels[i * batch_size:(i + 1) * batch_size] )
+        target_labels = np.random.permutation( orig_labels )
+        yield imgs, orig_labels, target_labels, fix_labels[i * batch_size:(i + 1) * batch_size], batch
 
 
 # ----------------------------------------
-def train( generator, discriminator, gan_model, latent_dim ):
+def train( args, train_D, train_G, train_dataset, train_dataset_label, train_dataset_fix_label, D, G ):
+    # Main training model
+    data_iter = get_loader( train_dataset, train_dataset_label,
+                            train_dataset_fix_label,
+                            image_size = args.image_resize, batch_size = args.batch_size, mode = args.mode )
+
+    valid = -np.ones( (args.batch_size, 2, 2, 1) )
+    fake = np.ones( (args.batch_size, 2, 2, 1) )
+    dummy = np.zeros( (args.batch_size, 2, 2, 1) )  # Dummy gt for gradient penalty
+    for epoch in range( args.num_iteration ):
+        imgs, orig_labels, target_labels, fix_labels, _ = next( data_iter )
+
+        # Setting learning rate (linear decay)
+        if epoch > (args.num_iteration - args.num_iteration_decay):
+            KERAS_backend.set_value( train_D.optimizer.lr,
+                                     args.d_lr * (args.num_iteration - epoch) / (args.num_iteration - args.num_iteration_decay) )
+            KERAS_backend.set_value( train_G.optimizer.lr,
+                                     args.g_lr * (args.num_iteration - epoch) / (args.num_iteration - args.num_iteration_decay) )
+
+        # Training Discriminators
+        D_loss = train_D.train_on_batch( x = [imgs, target_labels], y = [valid, orig_labels, fake, dummy] )
+
+        # Training Generators
+        if (epoch + 1) % args.n_critic == 0:
+            G_loss = train_G.train_on_batch( x = [imgs, orig_labels, target_labels], y = [valid, target_labels, imgs] )
+
+        if (epoch + 1) % args.log_step == 0:
+            print( f"Iteration: [{epoch + 1}/{args.num_iteration}]" )
+            print(
+                    f"\tD/loss_real = [{D_loss[1]:.4f}], D/loss_fake = [{D_loss[3]:.4f}], D/loss_cls =  [{D_loss[2]:.4f}], D/loss_gp = [{D_loss[4]:.4f}]" )
+            print( f"\tG/loss_fake = [{G_loss[1]:.4f}], G/loss_rec = [{G_loss[3]:.4f}], G/loss_cls = [{G_loss[2]:.4f}]" )
+
+        if (epoch + 1) % args.model_save_step == 0:
+            G.save_weights( os.path.join( args.model_save_dir, 'G_weights.hdf5' ) )
+            D.save_weights( os.path.join( args.model_save_dir, 'D_weights.hdf5' ) )
+            train_D.save_weights( os.path.join( args.model_save_dir, 'train_D_weights.hdf5' ) )
+            train_G.save_weights( os.path.join( args.model_save_dir, 'train_G_weights.hdf5' ) )
+
+
+# ----------------------------------------
+def test( generator, discriminator, gan_model, latent_dim ):
     # Main training model
     return
 
@@ -459,7 +442,7 @@ def check_gpu():
     # ----------------------------------------
     # # Testing and enabling GPU
     print( tf.test.is_built_with_cuda() )
-    print( "Num GPUs Available: ", len( tf.config.list_physical_devices( 'GPU' ) ) )
+    print( "[ => ] Num GPUs Available: ", len( tf.config.list_physical_devices( 'GPU' ) ) )
     tf.config.list_physical_devices( 'GPU' )
 
     config = ConfigProto()
@@ -481,10 +464,14 @@ def main():
     # check gpu availability
     check_gpu()
 
+    # -------------- LOAD DATASET -------------------------------
+    # -----------------------------------------------------------
     # Load the dataset with resized polar and estimated diffuse images
-    OriginalImageStack, img_0deg, img_45deg, img_90deg, img_135deg, estimated_diffuse = load_dataset( args )
-    print( "[LOADED IMAGE] - Dataset size: ", len( img_0deg ), "images" )
+    filenames_Itot, filenames_0deg, filenames_45deg, filenames_90deg, filenames_135deg, filenames_est_diffuse = load_dataset( args )
+    print( "[LOADED IMAGE] - Dataset size: ", len( filenames_0deg ), "images" )
 
+    # ---------------BUILD MODEL---------------------------------
+    # -----------------------------------------------------------
     image_size = args.image_resize
     # ----------------------------------------
     # create the generator
@@ -493,7 +480,7 @@ def main():
     G.summary()
     # ----------------------------------------
     # create discriminator
-    D = define_descriminator( args )
+    D = define_discriminator( args )
     # summarize the model
     D.summary()
 
@@ -557,9 +544,20 @@ def main():
                      optimizer = Adam( lr = args.g_lr, beta_1 = args.beta1, beta_2 = args.beta2 ),
                      loss_weights = [1, args.lambda_cls, args.lambda_rec] )
 
+    # ----------------TRAIN AND TEST THE MODEL-------------------
+    # -----------------------------------------------------------
     """ Input Image"""
-    Image_data_class = ImageData( data_dir = args.data_dir, selected_attrs = args.selected_attrs )
-    Image_data_class.preprocess()
+    test_dataset, test_dataset_label, train_dataset, train_dataset_label, test_dataset_fix_label, train_dataset_fix_label = preprocess(
+        filenames_Itot, filenames_0deg, filenames_45deg,
+        filenames_90deg, filenames_135deg, filenames_est_diffuse )
+
+    if args.mode == 'train':
+        train( args, train_D, train_G, train_dataset, train_dataset_label, train_dataset_fix_label, D, G )
+        print( " [*] Training finished!" )
+
+    if args.mode == 'test':
+        test()
+        print( " [*] Test finished!" )
 
 
 # ----------------------------------
