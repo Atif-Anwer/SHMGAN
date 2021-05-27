@@ -27,7 +27,7 @@ import os
 import h5py
 import tensorflow as tf
 # noinspection PyUnresolvedReferences
-from keras.layers import Concatenate, Lambda, Reshape, _Merge, Add, LeakyReLU
+from keras.layers import Concatenate, Lambda, Reshape, Add, LeakyReLU
 from keras.layers import Conv2D, Input, ReLU, UpSampling2D, ZeroPadding2D
 from keras.models import Model
 from keras.optimizers import Adam
@@ -60,22 +60,24 @@ def parse_args():
     parser.add_argument( '--num_iteration', type = int, default = 200000, help = 'number of total iterations for training D' )
     parser.add_argument( '--est_diffuse', type = bool, default = True,
                          help = '(TRUE) Estimate diffuse image from images or (FALSE) load from hdf5 file' )
-    parser.add_argument( '--image_resize', type = int, default = 128, help = 'image resize resolution' )
+    parser.add_argument( '--image_size', type = int, default = 128, help = 'image resize resolution' )
     parser.add_argument( '--5', type = int, default = 5, help = 'dimension of polarimetric domain images )' )
     parser.add_argument( '--batch_size', type = int, default = 4, help = 'mini-batch size' )
     parser.add_argument( '--g_lr', type = float, default = 0.0001, help = 'learning rate for G' )
     parser.add_argument( '--d_lr', type = float, default = 0.0001, help = 'learning rate for D' )
     parser.add_argument( '--beta1', type = float, default = 0.5, help = 'beta1 for Adam optimizer' )
     parser.add_argument( '--beta2', type = float, default = 0.999, help = 'beta2 for Adam optimizer' )
-    parser.add_argument( '--data_dir', type = str, default = 'data/celeba' )
     parser.add_argument( '--selected_attrs', '--list', nargs = '+', help = 'selected attributes for the CelebA dataset',
                          default = ['0deg', '45deg', '90deg', '135deg', 'est_diffuse'] )
     parser.add_argument( '--num_iteration_decay', type = int, default = 100000, help = 'number of iterations for decaying lr' )
     parser.add_argument( '--n_critic', type = int, default = 5, help = 'number of D updates per each G update' )
+    parser.add_argument( '--lambda_cls', type = float, default = 1, help = 'weight for domain classification loss' )
+    parser.add_argument( '--lambda_rec', type = float, default = 10, help = 'weight for reconstruction loss' )
+    parser.add_argument( '--lambda_gp', type = float, default = 10, help = 'weight for gradient penalty' )
 
     # Directories.
-    parser.add_argument( "-p", "--path", default = "./home/atif/Documents/Datasets/PolarizedImages/", help = "Path to polarimetric image" )
-    parser.add_argument( '--data_dir', type = str, default = 'data/celeba' )
+    # parser.add_argument( "-p", "--path", default = "./home/atif/Documents/Datasets/SHMGAN_dataset/", help = "Path to polarimetric image" )
+    parser.add_argument( "-p", "--path", default = "/home/atif/Documents/Datasets/KAUST/", help = "Path to polarimetric image" )
     parser.add_argument( '--model_save_dir', type = str, default = 'models' )
     parser.add_argument( '--sample_dir', type = str, default = 'samples' )
     parser.add_argument( '--result_dir', type = str, default = 'results' )
@@ -100,22 +102,21 @@ def load_dataset( args ):
     # 2. Generate estimated diffuse image
     # 3. The images are already resized in the read_image function
 
-    # filepath = os.path.realpath(__file__)
     filepath = args.path
     dirname = os.path.dirname( filepath )
     # The source folder for the polarized images
-    sourceFolder = os.path.join( dirname, "rawPolarized" )
+    sourceFolder = os.path.join( dirname, "PolarImages" )
     # The destination folder for the generated images
-    destinationFolder = os.path.join( dirname, "generatedImgs" )
+    destinationFolder = os.path.join( dirname, "GeneratedImgs" )
 
     polarization_labels = ['0', '45', '90', '135']
-    image_resize = args.image_size
-    filenames_Itot, OriginalImageStack, height, width, channels = read_images( sourceFolder, image_resize, pattern = "*_Itot.png" )
-    filenames_0deg, imgStack_0deg, height, width, channels = read_images( sourceFolder, image_resize, pattern = "*_0.png" )
-    filenames_45deg, imgStack_45deg, height, width, channels = read_images( sourceFolder, image_resize, pattern = "*_45.png" )
-    filenames_90deg, imgStack_90deg, height, width, channels = read_images( sourceFolder, image_resize, pattern = "*_90.png" )
-    filenames_135deg, imgStack_135deg, height, width, channels = read_images( sourceFolder, image_resize, pattern = "*_135.png" )
-    filenames_masks, imgStack_masks, height, width, channels = read_images( sourceFolder, image_resize, pattern = "*_mask.png" )
+    image_size = args.image_size
+    filenames_Itot, OriginalImageStack, height, width, channels = read_images( sourceFolder, image_size, pattern = "*_Itot.png" )
+    filenames_0deg, imgStack_0deg, height, width, channels = read_images( sourceFolder, image_size, pattern = "*_0.png" )
+    filenames_45deg, imgStack_45deg, height, width, channels = read_images( sourceFolder, image_size, pattern = "*_45.png" )
+    filenames_90deg, imgStack_90deg, height, width, channels = read_images( sourceFolder, image_size, pattern = "*_90.png" )
+    filenames_135deg, imgStack_135deg, height, width, channels = read_images( sourceFolder, image_size, pattern = "*_135.png" )
+    filenames_masks, imgStack_masks, height, width, channels = read_images( sourceFolder, image_size, pattern = "*_mask.png" )
 
     print( "\n No of images in folder: {0}".format( len( imgStack_0deg ) ) )
     # ESTIMATED DIFFUSE CALCULATION:
@@ -162,6 +163,7 @@ def load_dataset( args ):
             i += 1
 
             # WRITE the image to a file if required. Can eb commented out if req
+            # TODO: Save Estimated Diffuse Images in separate folder
             name = 'ResultA0' + str( i ) + '_min' + '.png'
             # cv2.imwrite(name, merged)
             filenames_est_diffuse.append( name )
@@ -208,12 +210,13 @@ def read_images( path, new_size, pattern ):
     image_stack = []
     filenames = []
     # build path string, sort by name
-    for img in sorted( glob.glob( path + "/" + pattern ) ):
-        img = cv2.imread( img )
+    for img_name in sorted( glob.glob( path + "/" + pattern ) ):
+        img = cv2.imread( img_name )
         # Resize image to improve performance
         resized_image = resize_images( img, rowsize = new_size, colsize = new_size )
         image_stack.append( resized_image )
-        filenames.append( os.path.split( path ) )
+        head, tail = os.path.split( img_name )
+        filenames.append( tail )
 
     height, width, channels = image_stack[0].shape
     return filenames, image_stack, height, width, channels
@@ -221,10 +224,9 @@ def read_images( path, new_size, pattern ):
 
 # ----------------------------------------
 def define_discriminator( options ):
-    init = tf.keras.RandomNormal( stddev = 0.02 )  # weight initialization
     # Discriminator network with PatchGAN
 
-    image_size = options.image_resize
+    image_size = options.image_size
     inp_img = Input( shape = (image_size, image_size, 3) )
     x = ZeroPadding2D( padding = 1 )( inp_img )
     x = Conv2D( filters = 64, kernel_size = 4, strides = 2, padding = 'valid', use_bias = False )( x )
@@ -255,7 +257,7 @@ def define_generator( options ):
     # generator from StarGAN
     """Generator network."""
     # Input tensors
-    image_size = options.image_resize
+    image_size = options.image_size
     inp_c = Input( shape = 5 )
     inp_img = Input( shape = (image_size, image_size, 3) )
 
@@ -265,16 +267,15 @@ def define_generator( options ):
     g = Concatenate()( [inp_img, c] )
 
     # First Conv2D
-    g = Conv2D( g, filters = 64, kernel_size = 7, strides = 1, padding = 'same', use_bias = False )
+    g = Conv2D( filters = 64, kernel_size = 7, strides = 1, padding = 'same', use_bias = False )( g )
     g = InstanceNormalization( axis = -1 )( g )
     g = ReLU()( g )
 
     # Down-sampling layers
-    # 3 downsampling layers, with 64, 128, 256 filters respectively
     N = 64
     for i in range( 2 ):
         g = ZeroPadding2D( padding = 1 )( g )
-        g = Conv2D( filters = N, kernel_size = 4, strides = 2, padding = 'valid', use_bias = False )( g )
+        g = Conv2D( filters = N*2, kernel_size = 4, strides = 2, padding = 'valid', use_bias = False )( g )
         g = InstanceNormalization( axis = -1 )( g )
         g = ReLU()( g )
         N *= 2  # double the filters for next layer
@@ -282,7 +283,7 @@ def define_generator( options ):
     # Bottleneck layers.
     # 6 layers of 256, K 3x3, S1, P1, ReLU
     for i in range( 6 ):
-        g = ResidualBlock( g, 256 )
+        g = ResidualBlock( g, N )
 
     # Up-sampling layers
     # 3 upsampling layers, with 256, 128, 64 filters respectively
@@ -312,13 +313,6 @@ def ResidualBlock( inp, dim_out ):
     x = Conv2D( filters = dim_out, kernel_size = 3, strides = 1, padding = 'valid', use_bias = False )( x )
     x = InstanceNormalization( axis = -1 )( x )
     return Add()( [inp, x] )
-
-
-# ----------------------------------------
-# def define_gan( generator_model, discriminator_model ):
-#     #
-#     ganModel = 0
-#     return ganModel
 
 
 # ----------------------------------------
@@ -395,7 +389,7 @@ def train( args, train_D, train_G, train_dataset, train_dataset_label, train_dat
     # Main training model
     data_iter = get_loader( train_dataset, train_dataset_label,
                             train_dataset_fix_label,
-                            image_size = args.image_resize, batch_size = args.batch_size, mode = args.mode )
+                            image_size = args.image_size, batch_size = args.batch_size, mode = args.mode )
 
     valid = -np.ones( (args.batch_size, 2, 2, 1) )
     fake = np.ones( (args.batch_size, 2, 2, 1) )
@@ -441,6 +435,8 @@ def check_gpu():
     # SETUP GPU
     # ----------------------------------------
     # # Testing and enabling GPU
+    # os.environ['TF_XLA_FLAGS'] = '--tf_xla_enable_xla_devices'
+    # os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
     print( tf.test.is_built_with_cuda() )
     print( "[ => ] Num GPUs Available: ", len( tf.config.list_physical_devices( 'GPU' ) ) )
     tf.config.list_physical_devices( 'GPU' )
@@ -448,10 +444,6 @@ def check_gpu():
     config = ConfigProto()
     config.gpu_options.allow_growth = True
     session = InteractiveSession( config = config )
-
-
-# os.environ['TF_XLA_FLAGS'] = '--tf_xla_enable_xla_devices'
-# os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 
 
 # ----------------------------------------
@@ -468,11 +460,11 @@ def main():
     # -----------------------------------------------------------
     # Load the dataset with resized polar and estimated diffuse images
     filenames_Itot, filenames_0deg, filenames_45deg, filenames_90deg, filenames_135deg, filenames_est_diffuse = load_dataset( args )
-    print( "[LOADED IMAGE] - Dataset size: ", len( filenames_0deg ), "images" )
+    print( "[LOADED IMAGES] - Dataset size: ", len( filenames_0deg ), "images" )
 
     # ---------------BUILD MODEL---------------------------------
     # -----------------------------------------------------------
-    image_size = args.image_resize
+    image_size = args.image_size
     # ----------------------------------------
     # create the generator
     G = define_generator( args )

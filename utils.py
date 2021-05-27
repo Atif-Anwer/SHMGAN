@@ -45,27 +45,27 @@ def preprocess( filenames_Itot, filenames_0deg, filenames_45deg, filenames_90deg
     b = []
 
     # Stacking filenames and their labels as one-hot vectors
-    for i, line in enumerate( filenames_Itot ):
+    for i in enumerate( filenames_Itot ):
         all_file_dataset.append( filenames_Itot )
         all_file_labels.append( [1, 0, 0, 0, 0, 0] )
 
-    for i, line in enumerate( filenames_0deg ):
+    for i in enumerate( filenames_0deg ):
         all_file_dataset.append( filenames_0deg )
         all_file_labels.append( [0, 1, 0, 0, 0, 0] )
 
-    for i, line in enumerate( filenames_45deg ):
+    for i in enumerate( filenames_45deg ):
         all_file_dataset.append( filenames_45deg )
         all_file_labels.append( [0, 0, 1, 0, 0, 0] )
 
-    for i, line in enumerate( filenames_90deg ):
+    for i in enumerate( filenames_90deg ):
         all_file_dataset.append( filenames_90deg )
         all_file_labels.append( [0, 0, 0, 1, 0, 0] )
 
-    for i, line in enumerate( filenames_135deg ):
+    for i in enumerate( filenames_135deg ):
         all_file_dataset.append( filenames_135deg )
         all_file_labels.append( [0, 0, 0, 0, 1, 0] )
 
-    for i, line in enumerate( filenames_est_diffuse ):
+    for i in enumerate( filenames_est_diffuse ):
         all_file_dataset.append( filenames_est_diffuse )
         all_file_labels.append( [0, 0, 0, 0, 0, 1] )
 
@@ -89,8 +89,8 @@ def preprocess( filenames_Itot, filenames_0deg, filenames_45deg, filenames_90deg
     # test_dataset_fix_label = create_labels(test_dataset_label, selected_attrs)
     # train_dataset_fix_label = create_labels(train_dataset_label, selected_attrs)
 
-    test_dataset_fix_label = create_labels( self.test_dataset_label, self.selected_attrs )
-    train_dataset_fix_label = create_labels( self.train_dataset_label, self.selected_attrs )
+    test_dataset_fix_label = create_labels( test_dataset_label, 1 )
+    train_dataset_fix_label = create_labels( train_dataset_label, 1 )
 
     print( '\n Finished preprocessing: Generated test and train datasets...' )
     return test_dataset, test_dataset_label, train_dataset, train_dataset_label, test_dataset_fix_label, train_dataset_fix_label
