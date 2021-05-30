@@ -3,6 +3,7 @@
   <component name="ProjectModuleManager">
     <modules>
       <module fileurl="file://$PROJECT_DIR$/.idea/SHMGAN.iml" filepath="$PROJECT_DIR$/.idea/SHMGAN.iml" />
+      <module fileurl="file://$USER_HOME$/Documents/StarGAN-github/.idea/StarGAN-github.iml" filepath="$USER_HOME$/Documents/StarGAN-github/.idea/StarGAN-github.iml" />
     </modules>
   </component>
 </project>
