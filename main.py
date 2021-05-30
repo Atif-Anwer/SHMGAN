@@ -210,13 +210,14 @@ def read_images( path, new_size, pattern ):
     image_stack = []
     filenames = []
     # build path string, sort by name
-    for img_name in sorted( glob.glob( path + "/" + pattern ) ):
-        img = cv2.imread( img_name )
+    for img_path in sorted( glob.glob( path + "/" + pattern ) ):
+        img = cv2.imread( img_path )
         # Resize image to improve performance
         resized_image = resize_images( img, rowsize = new_size, colsize = new_size )
         image_stack.append( resized_image )
-        head, tail = os.path.split( img_name )
-        filenames.append( tail )
+        head, tail = os.path.split( img_path )
+        # filenames.append( tail )
+        filenames.append( img_path )
 
     height, width, channels = image_stack[0].shape
     return filenames, image_stack, height, width, channels
@@ -351,47 +352,19 @@ def reconstruction_loss( self, Y_true, Y_pred ):
 
 
 def classification_loss( self, Y_true, Y_pred ):
-    # return tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(labels=Y_true, logits=Y_pred)) # orig
-    return tf.reduce_mean( tf.math.squared_difference( Y_pred, Y_true ) )
+    return tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(labels=Y_true, logits=Y_pred)) # orig
+    # return tf.reduce_mean( tf.math.squared_difference( Y_pred, Y_true ) )
     # return tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(labels=Y_true, logits=Y_pred))
     # return tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits_v2(labels=Y_true, logits=Y_pred))
     # return tf.reduce_mean(tf.losses.categorical_crossentropy(Y_true, Y_pred, from_logits=True))
 
 
 # ----------------------------------------
-def get_loader( filenames, labels, fix_labels, image_size = 128, batch_size = 16, mode = 'train' ):
-    """Build and return a data loader."""
-    n_batches = int( len( filenames ) / batch_size )
-    total_samples = n_batches * batch_size
-
-    for i in range( n_batches ):
-        batch = filenames[i * batch_size:(i + 1) * batch_size]
-        imgs = []
-        for p in batch:
-            image = cv2.imread( p )
-            image = cv2.cvtColor( image, cv2.COLOR_BGR2RGB )
-            image = resize_images( image, colsize = image_size, rowsize = image_size )
-            if mode == 'train':
-                proba = np.random.rand()
-                if proba > 0.5:
-                    image = cv2.flip( image, 1 )
-
-            imgs.append( image )
-
-        imgs = np.array( imgs ) / 127.5 - 1
-        orig_labels = np.array( labels[i * batch_size:(i + 1) * batch_size] )
-        target_labels = np.random.permutation( orig_labels )
-        yield imgs, orig_labels, target_labels, fix_labels[i * batch_size:(i + 1) * batch_size], batch
-
-
-# ----------------------------------------
-def train( args, train_D, train_G, train_dataset, train_dataset_label, train_dataset_fix_label, D, G ):
+def train( args, train_D, train_G, train_dataset, train_dataset_label, D, G ):
     # Main training model
-    data_iter = get_loader( train_dataset, train_dataset_label,
-                            train_dataset_fix_label,
-                            image_size = args.image_size, batch_size = args.batch_size, mode = args.mode )
+    data_iter = get_loader( train_dataset, train_dataset_label, image_size = args.image_size, batch_size = args.batch_size, mode = args.mode )
 
-    valid = -np.ones( (args.batch_size, 2, 2, 1) )
+    valid = np.ones( (args.batch_size, 2, 2, 1) )
     fake = np.ones( (args.batch_size, 2, 2, 1) )
     dummy = np.zeros( (args.batch_size, 2, 2, 1) )  # Dummy gt for gradient penalty
     for epoch in range( args.num_iteration ):
@@ -509,7 +482,7 @@ def main():
 
     # Setup loss for train_D
     train_D.compile( loss = [wasserstein_loss, classification_loss, wasserstein_loss, partial_gp_loss],
-                     optimizer = Adam( lr = args.d_lr, beta_1 = args.beta1, beta_2 = args.beta2 ),
+                     optimizer = Adam( learning_rate = args.d_lr, beta_1 = args.beta1, beta_2 = args.beta2 ),
                      loss_weights = [1, args.lambda_cls, 1, args.lambda_gp] )
 
     # Update G and not update D
@@ -533,18 +506,23 @@ def main():
 
     # Setup loss for train_G
     train_G.compile( loss = [wasserstein_loss, classification_loss, reconstruction_loss],
-                     optimizer = Adam( lr = args.g_lr, beta_1 = args.beta1, beta_2 = args.beta2 ),
+                     optimizer = Adam( learning_rate = args.g_lr, beta_1 = args.beta1, beta_2 = args.beta2 ),
                      loss_weights = [1, args.lambda_cls, args.lambda_rec] )
 
     # ----------------TRAIN AND TEST THE MODEL-------------------
     # -----------------------------------------------------------
     """ Input Image"""
-    test_dataset, test_dataset_label, train_dataset, train_dataset_label, test_dataset_fix_label, train_dataset_fix_label = preprocess(
+    # TODO : Update preprocess with loading filenames and returning data for training
+    test_dataset, test_dataset_label, train_dataset, train_dataset_label = preprocess(
         filenames_Itot, filenames_0deg, filenames_45deg,
         filenames_90deg, filenames_135deg, filenames_est_diffuse )
 
+    # TODO : Fully Working StarGAN
+    # TODO : Git-branch for collagan and shm codes
+    # TODO : Update to include COLLAGAN Changes
+    # TODO : Update to include SHMGAN losses
     if args.mode == 'train':
-        train( args, train_D, train_G, train_dataset, train_dataset_label, train_dataset_fix_label, D, G )
+        train( args, train_D, train_G, train_dataset, train_dataset_label, D, G )
         print( " [*] Training finished!" )
 
     if args.mode == 'test':
