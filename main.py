@@ -77,7 +77,7 @@ def parse_args():
 
     # Directories.
     # parser.add_argument( "-p", "--path", default = "./home/atif/Documents/Datasets/SHMGAN_dataset/", help = "Path to polarimetric image" )
-    parser.add_argument( "-p", "--path", default = "/home/atif/Documents/Datasets/KAUST/", help = "Path to polarimetric image" )
+    parser.add_argument( "-p", "--path", default = "/home/atif/Documents/Datasets/SHMGAN_dataset/", help = "Path to polarimetric image" )
     parser.add_argument( '--model_save_dir', type = str, default = 'models' )
     parser.add_argument( '--sample_dir', type = str, default = 'samples' )
     parser.add_argument( '--result_dir', type = str, default = 'results' )
@@ -108,6 +108,8 @@ def load_dataset( args ):
     sourceFolder = os.path.join( dirname, "PolarImages" )
     # The destination folder for the generated images
     destinationFolder = os.path.join( dirname, "GeneratedImgs" )
+    # Estimated diffuse images pre-calculated and saved
+    estDiffFolder = os.path.join( dirname, "Estimated_Diffuse" )
 
     polarization_labels = ['0', '45', '90', '135']
     image_size = args.image_size
@@ -116,7 +118,7 @@ def load_dataset( args ):
     filenames_45deg, imgStack_45deg, height, width, channels = read_images( sourceFolder, image_size, pattern = "*_45.png" )
     filenames_90deg, imgStack_90deg, height, width, channels = read_images( sourceFolder, image_size, pattern = "*_90.png" )
     filenames_135deg, imgStack_135deg, height, width, channels = read_images( sourceFolder, image_size, pattern = "*_135.png" )
-    filenames_masks, imgStack_masks, height, width, channels = read_images( sourceFolder, image_size, pattern = "*_mask.png" )
+    # filenames_masks, imgStack_masks, height, width, channels = read_images( sourceFolder, image_size, pattern = "*_mask.png" )
 
     print( "\n No of images in folder: {0}".format( len( imgStack_0deg ) ) )
     # ESTIMATED DIFFUSE CALCULATION:
@@ -163,29 +165,29 @@ def load_dataset( args ):
             i += 1
 
             # WRITE the image to a file if required. Can eb commented out if req
-            # TODO: Save Estimated Diffuse Images in separate folder
-            name = 'ResultA0' + str( i ) + '_min' + '.png'
+            name = estDiffFolder + "/" + 'Result_' + str( i ) + '_min.png'
             # cv2.imwrite(name, merged)
             filenames_est_diffuse.append( name )
 
             # Stack the estimated diffuse images for later use in loop
             estimated_diffuse_stack.append( merged )
-    #
-    # # DEBUG STACK DISPLAY
-    # Horizontal1 = np.hstack([orig, merged])
-    # # Debug display
-    # cv2.namedWindow("Loaded Image", cv2.WINDOW_NORMAL)
-    # # cv2.resizeWindow("dice", 600,600)
-    # cv2.imshow("Loaded Image", Horizontal1)
-    # cv2.waitKey(0)
-    # cv2.destroyAllWindows()
-    # # i += 1
-    #
-    # # clear data before next loop; avoiding any data overwriting issues
-    # b.clear()
-    # g.clear()
-    # r.clear()
-    # merged.fill(0)  # clear the vars before calculating
+            #
+            # # DEBUG STACK DISPLAY
+            # Horizontal1 = np.hstack([orig, merged])
+            # # Debug display
+            # cv2.namedWindow("Loaded Image", cv2.WINDOW_NORMAL)
+            # # cv2.resizeWindow("dice", 600,600)
+            # cv2.imshow("Loaded Image", Horizontal1)
+            # cv2.waitKey(0)
+            # # cv2.destroyAllWindows()
+            # # i += 1
+            #
+            # clear data before next loop; avoiding any data overwriting issues
+            b.clear()
+            g.clear()
+            r.clear()
+            merged.fill(0)  # clear the vars before calculating
+
     else:  # If argument is 'false' then load from hdf5 file
         save_dataset_hdf5( OriginalImageStack )
 
