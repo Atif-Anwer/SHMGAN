@@ -413,13 +413,14 @@ def check_gpu():
     # os.environ['TF_XLA_FLAGS'] = '--tf_xla_enable_xla_devices'
     # os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
     print( tf.test.is_built_with_cuda() )
-    print( "[ => ] Num GPUs Available: ", len( tf.config.list_physical_devices( 'GPU' ) ) )
-    tf.config.list_physical_devices( 'GPU' )
+    gpus = tf.config.list_physical_devices( 'GPU' )
+    print( "[ => ] Num GPUs Available: ", len( gpus ) )
+    for gpu in gpus:
+        print( "Name:", gpu.name, "  Type:", gpu.device_type )
 
     config = ConfigProto()
     config.gpu_options.allow_growth = True
     session = InteractiveSession( config = config )
-
 
 # ----------------------------------------
 # ================= MAIN =================
@@ -427,6 +428,12 @@ def check_gpu():
 def main():
     # To setup the various variables for the network
     args = parse_args()
+
+    q = vars( args )
+    print( '------------ Options -------------' )
+    for k, v in sorted( q.items() ):
+        print( '%s: %s' % (str( k ), str( v )) )
+    print( '-------------- End ----------------' )
 
     # check gpu availability
     check_gpu()
@@ -520,7 +527,6 @@ def main():
         filenames_90deg, filenames_135deg, filenames_est_diffuse )
 
     # TODO : Fully Working StarGAN
-    # TODO : Git-branch for collagan and shm codes
     # TODO : Update to include COLLAGAN Changes
     # TODO : Update to include SHMGAN losses
     if args.mode == 'train':
