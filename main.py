@@ -25,25 +25,27 @@ import os
 # import numpy as np
 # from matplotlib import pyplot
 import h5py
+# NOTE:
+# Removing all references to vanilla keras (true compatibility with tensorflow is now deprecated)
+# Pulling InstanceNormalization from tensorflow_addons instead of keras-contrib (deprecated)
+from tensorflow.python.keras.layers.merge import _Merge
 import tensorflow as tf
+from tensorflow.keras.models import Model, Sequential, load_model
 # noinspection PyUnresolvedReferences
-from keras.layers import Concatenate, Lambda, Reshape, Add, LeakyReLU
-from keras.layers import Conv2D, Input, ReLU, UpSampling2D, ZeroPadding2D
-from keras.models import Model
-from keras.optimizers import Adam
-from keras import backend as KERAS_backend
+from tensorflow.keras.layers import Input, Conv2D, MaxPooling2D, ZeroPadding2D, Conv2D, BatchNormalization, LeakyReLU, ReLU, UpSampling2D
+from tensorflow.keras.layers import Reshape, Dropout, Concatenate, Lambda, Multiply, Add, Flatten, Dense
+from tensorflow_addons.layers import InstanceNormalization
 # os.environ['TF_XLA_FLAGS'] = '--tf_xla_enable_xla_devices'
-# from keras_contrib.layers.normalization import InputSpec
-from keras_contrib.layers.normalization.instancenormalization import InstanceNormalization
+from tensorflow.keras import backend as KERAS_backend
+
 # Removes error when running Tensorflow on GPU
 # for Tensorflow 2.2 and Python 3.6+
 from tensorflow._api.v2.compat.v1 import ConfigProto
 from tensorflow._api.v2.compat.v1 import InteractiveSession
-from keras.utils.vis_utils import plot_model
+from tensorflow.keras.utils import plot_model
 from functools import partial
 from utils import *
 import random
-
 
 # ----------------------------------------
 # =============== FUNCTIONS===============
@@ -491,7 +493,7 @@ def main():
 
     # Setup loss for train_D
     train_D.compile( loss = [wasserstein_loss, classification_loss, wasserstein_loss, partial_gp_loss],
-                     optimizer = Adam( learning_rate = args.d_lr, beta_1 = args.beta1, beta_2 = args.beta2 ),
+                     optimizer = tf.keras.optimizers.Adam( learning_rate = args.d_lr, beta_1 = args.beta1, beta_2 = args.beta2 ),
                      loss_weights = [1, args.lambda_cls, 1, args.lambda_gp] )
 
     # Update G and not update D
@@ -515,7 +517,7 @@ def main():
 
     # Setup loss for train_G
     train_G.compile( loss = [wasserstein_loss, classification_loss, reconstruction_loss],
-                     optimizer = Adam( learning_rate = args.g_lr, beta_1 = args.beta1, beta_2 = args.beta2 ),
+                     optimizer = tf.keras.optimizers.Adam( learning_rate = args.g_lr, beta_1 = args.beta1, beta_2 = args.beta2 ),
                      loss_weights = [1, args.lambda_cls, args.lambda_rec] )
 
     # ----------------TRAIN AND TEST THE MODEL-------------------
