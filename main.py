@@ -63,7 +63,7 @@ def parse_args():
     parser.add_argument( '--est_diffuse', type = bool, default = True,
                          help = '(TRUE) Estimate diffuse image from images or (FALSE) load from hdf5 file' )
     parser.add_argument( '--image_size', type = int, default = 128, help = 'image resize resolution' )
-    parser.add_argument( '--5', type = int, default = 5, help = 'dimension of polarimetric domain images )' )
+    parser.add_argument( '--c_dim', type = int, default = 5, help = 'dimension of polarimetric domain images )' )
     parser.add_argument( '--batch_size', type = int, default = 4, help = 'mini-batch size' )
     parser.add_argument( '--g_lr', type = float, default = 0.0001, help = 'learning rate for G' )
     parser.add_argument( '--d_lr', type = float, default = 0.0001, help = 'learning rate for D' )
@@ -250,8 +250,8 @@ def define_discriminator( options ):
     out_src = ZeroPadding2D( padding = 1 )( x )
     out_src = Conv2D( filters = 1, kernel_size = 3, strides = 1, padding = 'valid', use_bias = False )( out_src )
 
-    out_cls = Conv2D( filters = 5, kernel_size = kernel_size, strides = 1, padding = 'valid', use_bias = False )( x )
-    out_cls = Reshape( (5,) )( out_cls )
+    out_cls = Conv2D( filters = options.c_dim, kernel_size = kernel_size, strides = 1, padding = 'valid', use_bias = False )( x )
+    out_cls = Reshape( (options.c_dim,) )( out_cls )
 
     print( '\n [ => ] Building Discriminator ...' )
     return Model( inp_img, [out_src, out_cls] )
@@ -263,12 +263,12 @@ def define_generator( options ):
     """Generator network."""
     # Input tensors
     image_size = options.image_size
-    inp_c = Input( shape = 5 )
+    inp_c = Input( shape = options.c_dim )
     inp_img = Input( shape = (image_size, image_size, 3) )
 
     # Replicate spatially and concatenate domain information
     c = Lambda( lambda x: KERAS_backend.repeat( x, image_size ** 2 ) )( inp_c )
-    c = Reshape( (image_size, image_size, 5) )( c )
+    c = Reshape( (image_size, image_size, options.c_dim) )( c )
     g = Concatenate()( [inp_img, c] )
 
     # First Conv2D
@@ -366,13 +366,13 @@ def classification_loss( self, Y_true, Y_pred ):
 # ----------------------------------------
 def train( args, train_D, train_G, train_dataset, train_dataset_label, D, G ):
     # Main training model
-    data_iter = get_loader( train_dataset, train_dataset_label, image_size = args.image_size, batch_size = args.batch_size, mode = args.mode )
+    data_iter = get_loader( args, train_dataset, train_dataset_label, image_size = args.image_size, batch_size = args.batch_size, mode = args.mode )
 
     valid = np.ones( (args.batch_size, 2, 2, 1) )
     fake = np.ones( (args.batch_size, 2, 2, 1) )
     dummy = np.zeros( (args.batch_size, 2, 2, 1) )  # Dummy gt for gradient penalty
     for epoch in range( args.num_iteration ):
-        imgs, orig_labels, target_labels, fix_labels, _ = next( data_iter )
+        imgs, orig_labels, target_labels, batch = next( data_iter )
 
         # Setting learning rate (linear decay)
         if epoch > (args.num_iteration - args.num_iteration_decay):
@@ -476,7 +476,7 @@ def main():
     out_src_real, out_cls_real = D( x_real )
 
     # Compute output with fake images.
-    label_trg = Input( shape = (5,) )
+    label_trg = Input( shape = (args.c_dim,) )
     x_fake = G( [x_real, label_trg] )
     out_src_fake, out_cls_fake = D( x_fake )
 
@@ -502,8 +502,8 @@ def main():
 
     # All inputs
     real_x = Input( shape = (image_size, image_size, 3) )
-    org_label = Input( shape = (5,) )
-    trg_label = Input( shape = (5,) )
+    org_label = Input( shape = (args.c_dim,) )
+    trg_label = Input( shape = (args.c_dim,) )
 
     # Compute output of fake image
     fake_x = G( [real_x, trg_label] )
