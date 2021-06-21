@@ -5,7 +5,7 @@ import imutils
 import random
 
 
-def get_loader( filenames, labels, image_size = 128, batch_size = 16, mode = 'train' ):
+def get_loader( args, filenames, labels, image_size = 128, batch_size = 16, mode = 'train' ):
     """Build and return a data loader."""
     n_batches = int( len( filenames ) / batch_size )
     total_samples = n_batches * batch_size
@@ -15,6 +15,7 @@ def get_loader( filenames, labels, image_size = 128, batch_size = 16, mode = 'tr
         imgs = []
         for p in batch:
             image = cv2.imread( p )
+            image = resize_images( image, rowsize = args.image_size, colsize = args.image_size )
             # image = cv2.cvtColor( image, cv2.COLOR_BGR2RGB )
             # image = resize_images( image, image_size, image_size )
             if mode == 'train':
@@ -90,10 +91,11 @@ def preprocess( filenames_Itot, filenames_0deg, filenames_45deg, filenames_90deg
     #     train_dataset.append( all_file_dataset )
     #     train_dataset_label.append( all_file_labels )
 
-    test_dataset.append( all_file_dataset )
-    test_dataset_label.append( all_file_labels )
-    train_dataset.append( all_file_dataset )
-    train_dataset_label.append( all_file_labels )
+    test_dataset = all_file_dataset
+    test_dataset_label = all_file_labels
+    # train_dataset.append( all_file_dataset )
+    train_dataset = all_file_dataset
+    train_dataset_label = all_file_labels
 
     # test_dataset_fix_label = create_labels(test_dataset_label, selected_attrs)
     # train_dataset_fix_label = create_labels(train_dataset_label, selected_attrs)
@@ -111,7 +113,8 @@ def resize_images( img, rowsize, colsize ):
     # The loaded images will be resized to lower res for faster training and eval. After POC, higher res can be used
     # rows, cols, ch = img.shape
     # Adding white balance to remove the green tint generating from the polarized images
-    resized_image = white_balance( imutils.resize( img, width = colsize, height = rowsize ) )
+    # resized_image = white_balance( imutils.resize( img, width = colsize, height = rowsize ) )
+    resized_image = white_balance( cv2.resize(img, (rowsize, colsize), interpolation = cv2.INTER_AREA))
     return resized_image
 
 
