@@ -1,134 +1,279 @@
-import itertools
-import numpy as np
+"""
+# -----------------------------------------------------------
+    VARIOUS UTILITIES AND PLOT FUNCTIOS USED IN SHMGAN
+
+Uses Packages:
+    Python 3.8
+    CUDA 11.8
+    cuDnn 8.0
+    Tensorflow 2.5/2.6 + Keras 2.4
+
+(C) 2023 Atif Anwer, INSA Rouen, France
+Email: atif.anwer@insa-rouen.fr
+
+BLOCKS:
+    1. SHMGAN FUNCTIONS
+    2. SAVE FUNCTIONS
+    3. PRINT STUFF
+    4. VARIOUS PLOT FUNCTIONS
+
+# -----------------------------------------------------------
+"""
+
+import os
+
 import cv2
-import imutils
-import random
+import h5py
+import numpy as np
+import tensorflow as tf
+from matplotlib import cm
+from matplotlib import pyplot as plt
+
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+
+# --------------------------------------------------------------
+#                       SHMGAN FUNCTIONS                       |
+# --------------------------------------------------------------
+def check_gpu():
+    # ----------------------------------------
+    # SETUP GPU
+    # ----------------------------------------
+    # # Testing and enabling GPU
+    os.environ['TF_XLA_FLAGS'] = '--tf_xla_enable_xla_devices'
+    os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+    print( tf.test.is_built_with_cuda() )
+    gpus = tf.config.list_physical_devices( 'GPU' )
+    print( "[ => ] Num GPUs Available: ", len( gpus ) )
+    for gpu in gpus:
+        print( "Name:", gpu.name, "  Type:", gpu.device_type )
+        tf.config.experimental.set_memory_growth(gpus[0], True)
+        os.system("nvidia-smi --query-gpu=gpu_name --format=csv")
 
 
-def get_loader( filenames, labels, image_size = 128, batch_size = 16, mode = 'train' ):
-    """Build and return a data loader."""
-    n_batches = int( len( filenames ) / batch_size )
-    total_samples = n_batches * batch_size
+    # https://www.tensorflow.org/api_docs/python/tf/config/threading/set_inter_op_parallelism_threads
+    tf.config.threading.set_inter_op_parallelism_threads( 0 )
+    tf.config.threading.set_intra_op_parallelism_threads( 0 )
+    tf.config.experimental.enable_tensor_float_32_execution(enabled=True)
 
-    for i in range( n_batches ):
-        batch = filenames[i * batch_size: (i + 1) * batch_size]
-        imgs = []
-        for p in batch:
-            image = cv2.imread( p )
-            # image = cv2.cvtColor( image, cv2.COLOR_BGR2RGB )
-            # image = resize_images( image, image_size, image_size )
-            if mode == 'train':
-                proba = np.random.rand()
-                if proba > 0.5:
-                    image = cv2.flip( image, 1 )
+    # https://www.tensorflow.org/api_docs/python/tf/config/optimizer/set_experimental_options
+    tf.config.optimizer.set_experimental_options({'constant_folding': True})
+    tf.config.optimizer.set_experimental_options({'layout_optimizer': True})
+    tf.config.optimizer.set_experimental_options({'remapping': True})
+    tf.config.optimizer.set_experimental_options({'loop_optimization': True})
+    tf.config.optimizer.set_experimental_options({'pin_to_host_optimization': True})
+    tf.config.set_soft_device_placement(True)
 
-            imgs.append( image )
+    os.environ['TF_ENABLE_AUTO_MIXED_PRECISION'] = '1'
+# ------------------------------------------
+def calculate_estimate_diffuse( args, OriginalImageStack, imgStack_0deg, imgStack_45deg, imgStack_90deg, imgStack_135deg ):
+    filepath = args.path
+    dirname = os.path.dirname( filepath )
+    # Estimated diffuse images pre-calculated and saved
+    estDiffFolder = os.path.join( dirname, "Estimated_Diffuse" )
 
-        imgs = np.array( imgs ) / 127.5 - 1
-        orig_labels = np.array( labels[i * batch_size:(i + 1) * batch_size] )
-        target_labels = np.random.permutation( orig_labels )
-        yield imgs, orig_labels, target_labels, batch
-
-
-# ----------------------------------------
-def preprocess( filenames_Itot, filenames_0deg, filenames_45deg, filenames_90deg, filenames_135deg, filenames_est_diffuse ):
-    # We can fix the labels as follows: [itot, 0, 45, 90, 135, est_diff]
-    # So we assign the labels to all the filenames and load each file per loop, to save memory
-    # instead of reading all images and passing on the entire stack. Lots of images = much more mem req
-
-    all_file_dataset = []
-    all_file_labels = []
-    test_dataset = []
-    test_dataset_label = []
-    train_dataset = []
-    train_dataset_label = []
-    a = []
     b = []
+    g = []
+    r = []
+    estimated_diffuse_stack = []
+    filenames_est_diffuse = []
+    i = 0
+    for orig, img0, img45, img90, img135 in zip( OriginalImageStack, imgStack_0deg, imgStack_45deg, imgStack_90deg, imgStack_135deg ):
+        # Note: Each img variable is a 3 channel image; so we can split it up in BGR
+        blue, green, red = cv2.split( img0 )
+        b.append( blue )
+        g.append( green )
+        r.append( red )
 
-    # Stacking filenames and their labels as one-hot vectors
-    for i in range( len( filenames_Itot ) ):
-        all_file_dataset.append( filenames_Itot[i] )
-        all_file_labels.append( [1, 0, 0, 0, 0, 0] )
+        blue, green, red = cv2.split( img45 )
+        b.append( blue )
+        g.append( green )
+        r.append( red )
 
-    for i in range( len( filenames_0deg ) ):
-        all_file_dataset.append( filenames_0deg[i] )
-        all_file_labels.append( [0, 1, 0, 0, 0, 0] )
+        blue, green, red = cv2.split( img90 )
+        b.append( blue )
+        g.append( green )
+        r.append( red )
 
-    for i in range( len( filenames_45deg ) ):
-        all_file_dataset.append( filenames_45deg[i] )
-        all_file_labels.append( [0, 0, 1, 0, 0, 0] )
+        blue, green, red = cv2.split( img135 )
+        b.append( blue )
+        g.append( green )
+        r.append( red )
 
-    for i in range( len( filenames_90deg ) ):
-        all_file_dataset.append( filenames_90deg[i] )
-        all_file_labels.append( [0, 0, 0, 1, 0, 0] )
+        b_min = np.amin( b, axis = 0 )
+        g_min = np.amin( g, axis = 0 )
+        r_min = np.amin( r, axis = 0 )
 
-    for i in range( len( filenames_135deg ) ):
-        all_file_dataset.append( filenames_135deg[i] )
-        all_file_labels.append( [0, 0, 0, 0, 1, 0] )
+        merged = cv2.merge( [b_min, g_min, r_min] )
+        i += 1
 
-    for i in range( len( filenames_est_diffuse ) ):
-        all_file_dataset.append( filenames_est_diffuse[i] )
-        all_file_labels.append( [0, 0, 0, 0, 0, 1] )
+        # WRITE the image to a file if required. Can eb commented out if req
+        name = estDiffFolder + "/" + 'Result_' + str( i ) + '_ed.png'
+        # cv2.imwrite(name, merged)
+        filenames_est_diffuse.append( name )
 
-    # https://stackoverflow.com/questions/35201424/best-way-to-merge-a-2d-list-and-a-1d-list-in-python
-    # Should return a 2-D matrix with first column as filenames and the lables appended as following cols
-    # EXPECTED OUTPUT: # [ ['xyz.png'], [0, 0, 0, 0, 0, 1] ]
-    # To access filename and label, we can use a 2D access variable ..
-    # filelist [0]['index'] for filename
-    # filelist [1]['index'] for label
-    filelist = [x + [''] * (len( filenames_0deg ) - len( x )) for x in itertools.chain( [all_file_dataset], [all_file_labels] )]
+        # Stack the estimated diffuse images for later use in loop
+        estimated_diffuse_stack.append( merged )
 
-    # shuffling the images along with their labels for training
-    # Not working right now :/
-    random.seed( 1234 )
-    random.shuffle( filelist )
-    #
-    # if i < 3:
-    #     test_dataset.append( all_file_dataset )
-    #     test_dataset_label.append( all_file_dataset )
-    # else:
-    #     train_dataset.append( all_file_dataset )
-    #     train_dataset_label.append( all_file_labels )
+        # clear data before next loop; avoiding any data overwriting issues
+        b.clear()
+        g.clear()
+        r.clear()
+        merged.fill( 0 )  # clear the vars before calculating
 
-    test_dataset.append( all_file_dataset )
-    test_dataset_label.append( all_file_labels )
-    train_dataset.append( all_file_dataset )
-    train_dataset_label.append( all_file_labels )
-
-    # test_dataset_fix_label = create_labels(test_dataset_label, selected_attrs)
-    # train_dataset_fix_label = create_labels(train_dataset_label, selected_attrs)
-
-    # test_dataset_fix_label = create_labels( test_dataset_label, 1 )
-    # train_dataset_fix_label = create_labels( train_dataset_label, 1 )
-
-    print( '\n Finished preprocessing: Generated test and train datasets...' )
-    # return test_dataset, test_dataset_label, train_dataset, train_dataset_label, test_dataset_fix_label, train_dataset_fix_label
-    return test_dataset, test_dataset_label, train_dataset, train_dataset_label
-
-
-# ----------------------------------------
-def resize_images( img, rowsize, colsize ):
-    # The loaded images will be resized to lower res for faster training and eval. After POC, higher res can be used
-    # rows, cols, ch = img.shape
-    # Adding white balance to remove the green tint generating from the polarized images
-    resized_image = white_balance( imutils.resize( img, width = colsize, height = rowsize ) )
-    return resized_image
-
-
-# ----------------------------------------
-def create_labels( c_org, selected_attrs = None ):
-    pass
+        return estimated_diffuse_stack
 
 
 # ------------------------------------------
 # White balance
 #  Source: https://stackoverflow.com/questions/46390779/automatic-white-balancing-with-grayworld-assumption
 # ------------------------------------------
-def white_balance( input_image ):
-    result = cv2.cvtColor( input_image, cv2.COLOR_RGB2LAB )
-    avg_a = np.average( result[:, :, 1] )
-    avg_b = np.average( result[:, :, 2] )
-    result[:, :, 1] = result[:, :, 1] - ((avg_a - 128) * (result[:, :, 0] / 255.0) * 1.1)
-    result[:, :, 2] = result[:, :, 2] - ((avg_b - 128) * (result[:, :, 0] / 255.0) * 1.1)
-    whiteBalancedImage = cv2.cvtColor( result, cv2.COLOR_LAB2RGB )
-    return whiteBalancedImage
+# def white_balance( input_image ):
+#     result = cv2.cvtColor( input_image, cv2.COLOR_RGB2LAB )
+#     avg_a = np.average( result[:, :, 1] )
+#     avg_b = np.average( result[:, :, 2] )
+#     result[:, :, 1] = result[:, :, 1] - ((avg_a - 128) * (result[:, :, 0] / 255.0) * 1.1)
+#     result[:, :, 2] = result[:, :, 2] - ((avg_b - 128) * (result[:, :, 0] / 255.0) * 1.1)
+#     whiteBalancedImage = cv2.cvtColor( result, cv2.COLOR_LAB2RGB )
+#     return whiteBalancedImage
+
+
+# ------------------------------------------------------------
+#                       SAVE FUNCTIONS                       |
+# ------------------------------------------------------------
+def save_dataset_hdf5( image_stack ):
+    save_path = './estimated_diffuse_images.hdf5'
+    hf = h5py.File( save_path, 'a' )  # open a hdf5 file
+
+    hf.create_dataset( 'default', data = image_stack, compression = "gzip", compression_opts = 9 )
+    hf.close()  # close the hdf5 file
+    print( '\n [ => ] Dataset Saved. hdf5 file size: %d bytes' % os.path.getsize( save_path ) )
+
+
+# --------------------------------------------------------------
+#                       PRINT STUFF                            |
+# --------------------------------------------------------------
+# ------------------------------------------
+# Print iterations progress
+#  https://github.com/Kal213/StarGAN-Tutorial-Tensorflow-2.3/blob/main/datagen.py
+# Usage: printProgressBar(step % 1000, 999, decimals=2)
+# ------------------------------------------
+def printProgressBar (iteration, total, prefix = '', suffix = '', decimals = 1, length = 50, fill = '█'):
+    """
+    Call in a loop to create terminal progress bar
+    @params:
+        iteration   - Required  : current iteration (Int)
+        total       - Required  : total iterations (Int)
+        prefix      - Optional  : prefix string (Str)
+        suffix      - Optional  : suffix string (Str)
+        decimals    - Optional  : positive number of decimals in percent complete (Int)
+        length      - Optional  : character length of bar (Int)
+        fill        - Optional  : bar fill character (Str)
+    """
+    percent = ("{0:." + str(decimals) + "f}").format(100 * (iteration / float(total)))
+    filledLength = int(length * iteration // total)
+    bar = fill * filledLength + '-' * (length - filledLength)
+    print('\r %s |%s| %s%% %s' % (prefix, bar, percent, suffix), end = '\r')
+    # Print New Line on Complete
+    if iteration == total:
+        print()
+        print()
+
+# --------------------------------------------------------------
+#                       VARIOUS PLOT FUNCTIONS                 |
+# --------------------------------------------------------------
+
+# ------------------------------------------
+# https://github.com/Ha0Tang/AttentionGAN/blob/68a478a944bb45d288d67f99fe110ddf087fd84d/AttentionGAN-v1-multi/solver.py#L123
+# --------------------------------------------------
+"""Convert the range from [-1, 1] to [0, 1]."""
+# --------------------------------------------------
+def rescale_01( input_tensor ):
+
+    rescaled_01 = tf.math.divide_no_nan( \
+                    tf.math.subtract(input_tensor,tf.math.reduce_min(input_tensor) ) , \
+                    tf.math.subtract( tf.math.reduce_max(input_tensor), tf.math.reduce_min(input_tensor)))
+    return rescaled_01
+
+
+# ------------------------------------------
+# Plot an image grid
+# Sauce: https://www.tensorflow.org/tensorboard/image_summaries
+def image_grid( im1, im2, im3, im4, im5 ):
+    """Return a 5x5 grid of the MNIST images as a matplotlib figure."""
+    # Create a figure to contain the plot.
+    figure = plt.figure(figsize=(15,5))
+
+    plt.subplot(1, 5, 1, title="0")
+    plt.xticks([])
+    plt.yticks([])
+    plt.grid(False)
+    plt.imshow( ( tf.squeeze( im1 ).numpy().astype("float32")) )
+
+    plt.subplot(1, 5, 2, title="45")
+    plt.xticks([])
+    plt.yticks([])
+    plt.grid(False)
+    plt.imshow( ( tf.squeeze( im2 ).numpy().astype("float32")) )
+
+    plt.subplot(1, 5, 3, title="90")
+    plt.xticks([])
+    plt.yticks([])
+    plt.grid(False)
+    plt.imshow( ( tf.squeeze( im3 ).numpy().astype("float32")) )
+
+    plt.subplot(1, 5, 4, title="135")
+    plt.xticks([])
+    plt.yticks([])
+    plt.grid(False)
+    plt.imshow( ( tf.squeeze( im4 ).numpy().astype("float32")) )
+
+    plt.subplot(1, 5, 5, title="ED")
+    plt.xticks([])
+    plt.yticks([])
+    plt.grid(False)
+    plt.imshow( ( tf.squeeze( im5 ).numpy().astype("float32")) )
+
+    return figure
+
+# ------------------------------------------
+
+# Taking an input tensor and plotting each channel (image+mask) for debugging randomness
+def debug_plot( input_tensor ):
+    figure = plt.figure( figsize=(15,10) )
+    input_tensor = tf.squeeze( input_tensor )
+    channel = 0
+
+    for index in range ( 5 ):
+        channel += 1
+        figure.add_subplot( 2, 5, channel, title=str(channel-1))
+        # plt.tight_layout()
+        plt.xticks([])
+        plt.yticks([])
+        plt.imshow( (input_tensor[:, :, channel-1]).numpy().astype("float32"), cmap=cm.gray, )
+
+        figure.add_subplot( 2, 5, channel+5, title="Mask "+str(channel+5))
+        plt.xticks([])
+        plt.yticks([])
+        plt.imshow( input_tensor[:, :, channel-1+5], cmap=cm.gray, vmin=0, vmax=1 )
+
+    return figure
+
+# ------------------------------------------
+# Universal debug plotting for single or multi-channel images. Call whenever required
+def plot_single_image( input_tensor, title = ""):
+    figure = plt.figure( figsize=(10,15) )
+    if len( input_tensor[0,0,0,:] ) == 1:
+        plt.imshow( ( tf.squeeze ( input_tensor ).numpy().astype("float32") ),  cmap=cm.gray )
+        plt.title(label=title)
+    else:
+
+        figure.add_subplot( 4, 1, 1, title="Orig")
+        plt.imshow( tf.squeeze( input_tensor ).numpy().astype("float32") )
+
+        y,cb,cr = tf.split( tf.squeeze(input_tensor), 3, axis=2)
+        figure.add_subplot( 4, 1, 2, title="Ch1")
+        plt.imshow( tf.squeeze(rescale_01(y)).numpy().astype("float32"),  cmap=cm.gray)
+        figure.add_subplot( 4, 1, 3, title="Ch2")
+        plt.imshow(tf.squeeze(rescale_01(cb)).numpy().astype("float32"),  cmap=cm.gray)
+        figure.add_subplot( 4, 1, 4, title="Ch3")
+        plt.imshow(tf.squeeze(rescale_01(cr)).numpy().astype("float32"),  cmap=cm.gray)
